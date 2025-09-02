@@ -1,21 +1,82 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
-<?import javafx.geometry.Insets?>
+<?import javafx.geometry.*?>
 <?import javafx.scene.control.*?>
+<?import javafx.scene.effect.*?>
 <?import javafx.scene.layout.*?>
+<?import javafx.scene.text.*?>
+<?import javafx.collections.FXCollections?>
 
-<VBox xmlns="http://javafx.com/javafx"
-      xmlns:fx="http://javafx.com/fxml"
-      fx:controller="com.pbl4.syncproject.client.controllers.LoginController"
-      spacing="10" alignment="CENTER">
-    <padding>
-        <Insets top="20" right="20" bottom="20" left="20"/>
-    </padding>
+<?import java.lang.String?>
+<StackPane prefWidth="900.0" prefHeight="580.0" xmlns="http://javafx.com/javafx/21" xmlns:fx="http://javafx.com/fxml/1"
+           fx:controller="com.pbl4.syncproject.client.controllers.LoginController">
+    <children>
+        <!-- Nền gradient nhẹ -->
+        <Pane style="-fx-background-color: linear-gradient(to bottom right, #F8FAFF, #E9F0FF);" />
 
-    <Label text="Đăng nhập hệ thống đồng bộ"/>
-    <TextField fx:id="txtUsername" promptText="Username"/>
-    <PasswordField fx:id="txtPassword" promptText="Password"/>
-    <Button text="Đăng nhập" onAction="#handleLogin"/>
-    <Label fx:id="lblStatus" textFill="red"/>
-</VBox>
+        <!-- Container căn giữa -->
+        <VBox alignment="CENTER" spacing="18">
+            <children>
+                <Label text="Đăng nhập hệ thống đồng bộ" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Semibold" size="28" />
+                    </font>
+                </Label>
 
+                <!-- Thẻ (card) chứa form -->
+                <StackPane maxWidth="520" style="-fx-background-color: white; -fx-background-radius: 18; -fx-padding: 26;">
+                    <effect>
+                        <DropShadow color="#1f293720" radius="24" offsetY="8" />
+                    </effect>
+                    <children>
+                        <GridPane hgap="14" vgap="14">
+                            <columnConstraints>
+                                <ColumnConstraints halignment="RIGHT" minWidth="120" />
+                                <ColumnConstraints hgrow="ALWAYS" minWidth="260" />
+                            </columnConstraints>
+
+                            <!-- Username -->
+                            <Label text="Username" GridPane.rowIndex="0" GridPane.columnIndex="0" textFill="#374151" />
+                            <TextField fx:id="txtUsername" GridPane.rowIndex="0" GridPane.columnIndex="1"
+                                       promptText="Enter username" style="-fx-background-radius: 10; -fx-padding: 10;" />
+
+                            <!-- Password Hash -->
+                            <Label text="Password Hash" GridPane.rowIndex="1" GridPane.columnIndex="0" textFill="#374151" />
+                            <PasswordField fx:id="txtPassword" GridPane.rowIndex="1" GridPane.columnIndex="1"
+                                           promptText="Enter password" style="-fx-background-radius: 10; -fx-padding: 10;" />
+
+                            <!-- IP -->
+                            <Label text="IP Address" GridPane.rowIndex="2" GridPane.columnIndex="0" textFill="#374151" />
+                            <ComboBox fx:id="cmbIp" GridPane.rowIndex="2" GridPane.columnIndex="1"
+                                      style="-fx-background-radius: 10; -fx-padding: 10;">
+                            </ComboBox>
+
+                            <!-- Port -->
+                            <Label text="Port" GridPane.rowIndex="3" GridPane.columnIndex="0" textFill="#374151" />
+                            <ComboBox fx:id="cmbPort" GridPane.rowIndex="3" GridPane.columnIndex="1"
+                                      style="-fx-background-radius: 10; -fx-padding: 10;">
+                            </ComboBox>
+
+                            <!-- Actions -->
+                            <HBox spacing="10" alignment="CENTER_RIGHT" GridPane.rowIndex="4" GridPane.columnIndex="0" GridPane.columnSpan="2">
+                                <children>
+                                    <Button fx:id="btnClear" text="Clear"
+                                            style="-fx-background-color: #EEF2FF; -fx-text-fill: #4f46e5; -fx-background-radius: 10; -fx-padding: 10 16;"/>
+                                    <Button fx:id="btnLogin" text="Login" onAction="#handleLogin"
+                                            defaultButton="true"
+                                            style="-fx-background-color: #4f46e5; -fx-text-fill: white; -fx-background-radius: 10; -fx-padding: 10 18;"/>
+                                </children>
+                            </HBox>
+
+                            <!-- Status label -->
+                            <Label fx:id="lblStatus" GridPane.rowIndex="5" GridPane.columnIndex="0" GridPane.columnSpan="2"
+                                   textFill="red" />
+                        </GridPane>
+                    </children>
+                </StackPane>
+            </children>
+            <padding>
+                <Insets top="40" right="24" bottom="40" left="24" />
+            </padding>
+        </VBox>
+    </children>
+</StackPane>
