@@ -1,8 +1,12 @@
 package com.pbl4.syncproject.client.controllers;
 
 import javafx.fxml.FXML;
+import javafx.fxml.FXMLLoader;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.concurrent.Task;
+import javafx.stage.Stage;
 import java.io.*;
 import java.net.*;
 import java.util.Enumeration;
@@ -13,7 +17,7 @@ public class LoginController {
     @FXML private Label lblStatus;
     @FXML private ComboBox<String> cmbIp;
     @FXML private ComboBox<String> cmbPort;
-    @FXML
+    @FXML private Button btnClear;
 
     public void initialize(){
         cmbPort.getItems().addAll("5000","21", "22", "80", "443", "8080");
@@ -72,6 +76,27 @@ public class LoginController {
             if ("SUCCESS".equals(response)) {
                 lblStatus.setText("✅ Login thành công!");
                 lblStatus.setStyle("-fx-text-fill: green;");
+
+                // Open main window
+                try {
+                    FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main.fxml"));
+                    Parent root = loader.load();
+
+                    Stage mainStage = new Stage();
+                    mainStage.setTitle("Hệ thống đồng bộ dữ liệu - " + username);
+                    mainStage.setScene(new Scene(root, 1200, 800));
+                    mainStage.setMaximized(true);
+                    mainStage.show();
+
+                    // Close login window
+                    Stage loginStage = (Stage) txtUsername.getScene().getWindow();
+                    loginStage.close();
+
+                } catch (Exception e) {
+                    lblStatus.setText("❌ Lỗi mở giao diện chính!");
+                    lblStatus.setStyle("-fx-text-fill: red;");
+                    e.printStackTrace();
+                }
             } else {
                 lblStatus.setText("❌ Sai tài khoản hoặc mật khẩu!");
                 lblStatus.setStyle("-fx-text-fill: red;");
@@ -87,5 +112,14 @@ public class LoginController {
 
         // Run the task in a background thread
         new Thread(loginTask).start();
+    }
+
+    @FXML
+    private void handleClear() {
+        txtUsername.clear();
+        txtPassword.clear();
+        lblStatus.setText("");
+        cmbIp.getSelectionModel().select("127.0.0.1");
+        cmbPort.getSelectionModel().select(0);
     }
 }
