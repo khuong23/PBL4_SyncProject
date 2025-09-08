@@ -36,27 +36,27 @@ public class ClientHandler implements Runnable {
 
                     if (checkLogin(username, password)) {
                         out.println("SUCCESS");
-                        System.out.println("✅ Login success: " + username);
+                        System.out.println("Login success: " + username);
                     } else {
                         out.println("FAIL");
-                        System.out.println("❌ Login failed: " + username);
+                        System.out.println("Login failed: " + username);
                     }
                 } else {
                     out.println("FAIL");
-                    System.out.println("❌ Invalid input format: " + input);
+                    System.out.println("Invalid input format: " + input);
                 }
             } else {
                 out.println("FAIL");
-                System.out.println("❌ No input received");
+                System.out.println("No input received");
             }
 
         } catch (IOException e) {
-            System.err.println("⚠️ Client error: " + e.getMessage());
+            System.err.println("Client error: " + e.getMessage());
         } finally {
             try {
                 socket.close();
             } catch (IOException e) {
-                System.err.println("⚠️ Could not close socket: " + e.getMessage());
+                System.err.println("Could not close socket: " + e.getMessage());
             }
         }
     }

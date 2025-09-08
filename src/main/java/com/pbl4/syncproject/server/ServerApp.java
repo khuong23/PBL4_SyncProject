@@ -13,7 +13,7 @@ public class ServerApp {
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             Connection dbConnection = DatabaseManager.getConnection();
-            System.out.println("🚀 Server started on port " + PORT);
+            System.out.println("Server started on port " + PORT);
 
             while (true) {
                 Socket socket = serverSocket.accept();
@@ -23,7 +23,7 @@ public class ServerApp {
                 new Thread(handler).start();
             }
         } catch (Exception e) {
-            System.err.println("❌ Server error: " + e.getMessage());
+            System.err.println("Server error: " + e.getMessage());
         } finally {
             DatabaseManager.closeConnection();
         }
