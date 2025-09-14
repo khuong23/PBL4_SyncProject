@@ -1,5 +1,12 @@
 package com.pbl4.syncproject.server.handlers;
 
+import com.pbl4.syncproject.common.dispatcher.Dispatcher;
+import com.pbl4.syncproject.common.dispatcher.RequestHandler;
+import com.pbl4.syncproject.common.jsonhandler.JsonUtils;
+import com.pbl4.syncproject.common.jsonhandler.Request;
+import com.pbl4.syncproject.common.jsonhandler.Response;
+import com.pbl4.syncproject.server.dao.DatabaseManager;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -8,71 +15,61 @@ import java.net.Socket;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 
 public class ClientHandler implements Runnable {
-    private Socket socket;
-    private Connection dbConnection;
+    private final Socket socket;
+    private final Dispatcher dispatcher;
+    private final Connection dbConnection;
 
-    public ClientHandler(Socket socket, Connection dbConnection) {
+    public ClientHandler(Socket socket) throws Exception {
         this.socket = socket;
-        this.dbConnection = dbConnection;
+        this.dbConnection = DatabaseManager.getConnection();
+        this.dispatcher = new Dispatcher(dbConnection); // khởi tạo dispatcher
     }
 
     @Override
     public void run() {
         try (
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true)
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
         ) {
-            // Read the single line and split into username and password
-            String input = in.readLine();
-            if (input != null) {
-                String[] credentials = input.split(",");
-                if (credentials.length == 2) {
-                    String username = credentials[0].trim();
-                    String password = credentials[1].trim();
-
-                    System.out.println("📥 Received login: " + username);
-
-                    if (checkLogin(username, password)) {
-                        out.println("SUCCESS");
-                        System.out.println("Login success: " + username);
-                    } else {
-                        out.println("FAIL");
-                        System.out.println("Login failed: " + username);
-                    }
-                } else {
-                    out.println("FAIL");
-                    System.out.println("Invalid input format: " + input);
+            // Read JSON input
+            String input;
+            while ((input = in.readLine()) != null) {
+                try {
+                    System.out.println("Received: " + input);
+                    Request req = JsonUtils.fromJson(input, Request.class);
+                    Response res = dispatcher.dispatch(req);
+                    out.println(JsonUtils.toJson(res));
+                    out.flush();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    // gửi response lỗi cho client
+                    Response error = new Response("error", e.getMessage(), null);
+                    out.println(JsonUtils.toJson(error));
+                    out.flush();
                 }
-            } else {
-                out.println("FAIL");
-                System.out.println("No input received");
             }
-
-        } catch (IOException e) {
-            System.err.println("Client error: " + e.getMessage());
-        } finally {
-            try {
-                socket.close();
-            } catch (IOException e) {
-                System.err.println("Could not close socket: " + e.getMessage());
-            }
-        }
-    }
-
-    private boolean checkLogin(String username, String password) {
-        try {
-            String sql = "SELECT * FROM users WHERE Username=? AND PasswordHash=?";
-            PreparedStatement stmt = dbConnection.prepareStatement(sql);
-            stmt.setString(1, username);
-            stmt.setString(2, password); // Note: In production, hash passwords
-
-            ResultSet rs = stmt.executeQuery();
-            return rs.next();
         } catch (Exception e) {
-            System.err.println("DB error: " + e.getMessage());
-            return false;
+            e.printStackTrace();
+        } finally {
+            // Đóng connection trước
+            try {
+                if (dbConnection != null && !dbConnection.isClosed()) {
+                    dbConnection.close();
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            // Đóng socket sau
+            try {
+                if (socket != null && !socket.isClosed()) {
+                    socket.close();
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 }

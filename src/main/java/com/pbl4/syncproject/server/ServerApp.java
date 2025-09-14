@@ -12,20 +12,17 @@ public class ServerApp {
 
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            Connection dbConnection = DatabaseManager.getConnection();
             System.out.println("Server started on port " + PORT);
 
             while (true) {
                 Socket socket = serverSocket.accept();
-                System.out.println("🔗 New client connected: " + socket.getInetAddress());
+                System.out.println("New client connected: " + socket.getInetAddress());
 
-                ClientHandler handler = new ClientHandler(socket, dbConnection);
+                ClientHandler handler = new ClientHandler(socket);
                 new Thread(handler).start();
             }
         } catch (Exception e) {
-            System.err.println("Server error: " + e.getMessage());
-        } finally {
-            DatabaseManager.closeConnection();
+            e.printStackTrace();
         }
     }
 }

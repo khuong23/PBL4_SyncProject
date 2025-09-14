@@ -1,5 +1,10 @@
 package com.pbl4.syncproject.client.controllers;
 
+import com.google.gson.JsonObject;
+import com.pbl4.syncproject.common.jsonhandler.JsonUtils;
+import com.pbl4.syncproject.common.jsonhandler.Request;
+import com.pbl4.syncproject.common.jsonhandler.Response;
+
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -56,28 +61,42 @@ public class LoginController {
         }
 
         int port = Integer.parseInt(cmbPort.getSelectionModel().getSelectedItem());
-        // Create a Task for the network operation
-        Task<String> loginTask = new Task<>() {
+
+        // Task chạy mạng trong background thread
+        Task<Boolean> loginTask = new Task<>() {
             @Override
-            protected String call() throws Exception {
+            protected Boolean call() throws Exception {
                 try (Socket socket = new Socket(ip, port);
                      PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
                      BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
-                    writer.println(username + "," + password); // Send as one line
-                    return reader.readLine(); // Read the server response
+                    // Tạo JSON request
+                    JsonObject data = new JsonObject();
+                    data.addProperty("username", username);
+                    data.addProperty("password", password);
+
+                    Request req = new Request("LOGIN", data);
+                    String jsonString = JsonUtils.toJson(req);
+                    writer.println(jsonString); // gửi lên server
+
+                    // Đọc response từ server
+                    String responseStr = reader.readLine();
+                    Response resObj = JsonUtils.fromJson(responseStr, Response.class);
+
+                    // Trả về true nếu login thành công
+                    return "success".equalsIgnoreCase(resObj.getStatus());
                 }
             }
         };
 
-        // Handle the task result on the JavaFX thread
+        // Khi task thành công
         loginTask.setOnSucceeded(event -> {
-            String response = loginTask.getValue();
-            if ("SUCCESS".equals(response)) {
+            boolean success = loginTask.getValue();
+            if (success) {
                 lblStatus.setText("✅ Login thành công!");
                 lblStatus.setStyle("-fx-text-fill: green;");
 
-                // Open main window
+                // Mở giao diện chính
                 try {
                     FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main.fxml"));
                     Parent root = loader.load();
@@ -88,10 +107,9 @@ public class LoginController {
                     mainStage.setMaximized(true);
                     mainStage.show();
 
-                    // Close login window
+                    // Đóng login window
                     Stage loginStage = (Stage) txtUsername.getScene().getWindow();
                     loginStage.close();
-
                 } catch (Exception e) {
                     lblStatus.setText("❌ Lỗi mở giao diện chính!");
                     lblStatus.setStyle("-fx-text-fill: red;");
@@ -103,16 +121,17 @@ public class LoginController {
             }
         });
 
-        // Handle exceptions on the JavaFX thread
+        // Khi task thất bại
         loginTask.setOnFailed(event -> {
             lblStatus.setText("❌ Không kết nối được server!");
             lblStatus.setStyle("-fx-text-fill: red;");
-            loginTask.getException().printStackTrace(); // Debug the exception
+            loginTask.getException().printStackTrace();
         });
 
-        // Run the task in a background thread
+        // Chạy task
         new Thread(loginTask).start();
     }
+
 
     @FXML
     private void handleClear() {
