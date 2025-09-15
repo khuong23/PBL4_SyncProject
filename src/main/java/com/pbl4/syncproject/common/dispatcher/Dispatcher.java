@@ -13,7 +13,7 @@ public class Dispatcher {
 
     public Dispatcher(Connection dbConnection) {
         handlers.put("LOGIN", new LoginHandler(dbConnection));
-        // thêm handler khác ở đây
+
     }
 
     public Response dispatch(Request req) {

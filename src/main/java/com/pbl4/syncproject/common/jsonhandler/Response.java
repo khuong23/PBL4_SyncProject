@@ -7,7 +7,6 @@ public class Response {
     private String message;
     private JsonElement data;
 
-    // Constructor mặc định
     public Response() {}
 
     public Response(String status, String message, JsonElement data) {

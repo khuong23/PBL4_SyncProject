@@ -25,7 +25,7 @@ public class ClientHandler implements Runnable {
     public ClientHandler(Socket socket) throws Exception {
         this.socket = socket;
         this.dbConnection = DatabaseManager.getConnection();
-        this.dispatcher = new Dispatcher(dbConnection); // khởi tạo dispatcher
+        this.dispatcher = new Dispatcher(dbConnection);
     }
 
     @Override
@@ -34,7 +34,7 @@ public class ClientHandler implements Runnable {
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
         ) {
-            // Read JSON input
+
             String input;
             while ((input = in.readLine()) != null) {
                 try {
@@ -45,7 +45,6 @@ public class ClientHandler implements Runnable {
                     out.flush();
                 } catch (Exception e) {
                     e.printStackTrace();
-                    // gửi response lỗi cho client
                     Response error = new Response("error", e.getMessage(), null);
                     out.println(JsonUtils.toJson(error));
                     out.flush();
@@ -54,7 +53,6 @@ public class ClientHandler implements Runnable {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            // Đóng connection trước
             try {
                 if (dbConnection != null && !dbConnection.isClosed()) {
                     dbConnection.close();
@@ -62,7 +60,6 @@ public class ClientHandler implements Runnable {
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            // Đóng socket sau
             try {
                 if (socket != null && !socket.isClosed()) {
                     socket.close();
