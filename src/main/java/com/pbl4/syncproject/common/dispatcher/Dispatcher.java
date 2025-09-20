@@ -2,6 +2,7 @@ package com.pbl4.syncproject.common.dispatcher;
 
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
+import com.pbl4.syncproject.server.handlers.FolderTreeHandler;
 import com.pbl4.syncproject.server.handlers.LoginHandler;
 
 import java.sql.Connection;
@@ -13,7 +14,7 @@ public class Dispatcher {
 
     public Dispatcher(Connection dbConnection) {
         handlers.put("LOGIN", new LoginHandler(dbConnection));
-
+        handlers.put("FOLDER_TREE", new FolderTreeHandler(dbConnection) );
     }
 
     public Response dispatch(Request req) {
