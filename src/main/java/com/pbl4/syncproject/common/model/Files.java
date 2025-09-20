@@ -4,26 +4,24 @@ import java.time.LocalDateTime;
 
 public class Files {
     private int fileId;
-    private String fileName;
     private int folderId;
-    private int ownerId;
-    private long size;
+    private String fileName;
+    private long fileSize;
     private String fileHash;
     private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
+    private LocalDateTime lastModified;
 
     public Files() {}
 
-    public Files(int fileId, String fileName, int folderId, int ownerId, long size, String fileHash,
-                      LocalDateTime createdAt, LocalDateTime updatedAt) {
+    public Files(int fileId, int folderId, String fileName, long fileSize, String fileHash,
+                   LocalDateTime createdAt, LocalDateTime lastModified) {
         this.fileId = fileId;
-        this.fileName = fileName;
         this.folderId = folderId;
-        this.ownerId = ownerId;
-        this.size = size;
+        this.fileName = fileName;
+        this.fileSize = fileSize;
         this.fileHash = fileHash;
         this.createdAt = createdAt;
-        this.updatedAt = updatedAt;
+        this.lastModified = lastModified;
     }
 
     public int getFileId() { return fileId; }
@@ -35,11 +33,8 @@ public class Files {
     public int getFolderId() { return folderId; }
     public void setFolderId(int folderId) { this.folderId = folderId; }
 
-    public int getOwnerId() { return ownerId; }
-    public void setOwnerId(int ownerId) { this.ownerId = ownerId; }
-
-    public long getSize() { return size; }
-    public void setSize(long size) { this.size = size; }
+    public long getSize() { return fileSize; }
+    public void setSize(long size) { this.fileSize = size; }
 
     public String getFileHash() { return fileHash; }
     public void setFileHash(String fileHash) { this.fileHash = fileHash; }
@@ -47,6 +42,6 @@ public class Files {
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public LocalDateTime getUpdatedAt() { return lastModified; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.lastModified = updatedAt; }
 }
