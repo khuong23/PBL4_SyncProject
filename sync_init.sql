@@ -25,12 +25,10 @@ CREATE TABLE Users (
 -- Bảng thư mục
 CREATE TABLE Folders (
     FolderID INT AUTO_INCREMENT PRIMARY KEY,
-    UserID INT NOT NULL,
     ParentFolderID INT NULL,
     FolderName VARCHAR(255) NOT NULL,
     LastModified TIMESTAMP,
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (UserID) REFERENCES Users(UserID),
     FOREIGN KEY (ParentFolderID) REFERENCES Folders(FolderID) ON DELETE CASCADE
 );
 
@@ -97,8 +95,8 @@ CREATE TABLE SyncHistory (
 CREATE INDEX idx_folders_user ON Folders(UserID);
 CREATE INDEX idx_folders_parent ON Folders(ParentFolderID);
 CREATE INDEX idx_files_folder ON Files(FolderID);
-CREATE INDEX idx_access_user ON AccessControl(UserID);
-CREATE INDEX idx_access_file ON AccessControl(FileID);
+CREATE INDEX idx_fileaccess_user ON FileAccessControl(UserID);
+CREATE INDEX idx_fileaccess_file ON FileAccessControl(FileID);
 CREATE INDEX idx_folderaccess_user ON FolderAccessControl(UserID);
 CREATE INDEX idx_folderaccess_folder ON FolderAccessControl(FolderID);
 CREATE INDEX idx_synchistory_user ON SyncHistory(UserID);
