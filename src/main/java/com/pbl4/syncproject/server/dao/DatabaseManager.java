@@ -9,9 +9,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
 public class DatabaseManager {
-    private static final String URL = "jdbc:mysql://127.0.0.1:3307/syncdb";
+    private static final String URL = "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb?useSSL=true";
     private static final String USER = "sync_user";
-    private static final String PASSWORD = "baokhuong2332";
+    private static final String PASSWORD = "Syncpass123";
 
     private static Connection connection;
 
