@@ -12,7 +12,7 @@ public class UserDAO {
     }
 
     public boolean checkLogin(String username, String password) {
-        String sql = "SELECT * FROM users WHERE Username=? AND PasswordHash=?";
+        String sql = "SELECT * FROM Users WHERE Username=? AND PasswordHash=?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, username);
             stmt.setString(2, password); // production: hash password
