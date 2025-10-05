@@ -100,7 +100,7 @@ public class LoginController {
 
                 // Mở giao diện chính
                 try {
-                    FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main.fxml"));
+                    FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main-refactored.fxml"));
                     Parent root = loader.load();
 
                     Stage mainStage = new Stage();

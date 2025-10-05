@@ -15,8 +15,8 @@ import java.util.Base64;
  * Tách biệt network logic khỏi UI controller
  */
 public class NetworkService {
-    private static final String SERVER_IP = "127.0.0.1";
-    private static final int SERVER_PORT = 5000;
+    private static final String SERVER_IP = "20.89.65.146";
+    private static final int SERVER_PORT = 8080;
     private static final int TIMEOUT_MS = 30000; // 30 seconds
     private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
     
