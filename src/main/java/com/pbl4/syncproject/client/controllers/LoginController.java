@@ -25,9 +25,11 @@ public class LoginController {
     @FXML private Button btnClear;
 
     public void initialize(){
-        cmbPort.getItems().addAll("5000","21", "22", "80", "443", "8080");
-        cmbPort.getSelectionModel().select(0); // 5000
+        cmbPort.getItems().addAll("8080","21", "22", "80", "443");
+        cmbPort.getSelectionModel().select(0);
+        cmbIp.getItems().add("20.89.65.146");
         cmbIp.getItems().add("127.0.0.1");
+        cmbIp.getSelectionModel().select(0);
         loadIpAddress();
     }
     private void loadIpAddress(){
