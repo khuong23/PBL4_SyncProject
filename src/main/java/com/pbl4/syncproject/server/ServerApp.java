@@ -8,7 +8,7 @@ import java.net.Socket;
 import java.sql.Connection;
 
 public class ServerApp {
-    private static final int PORT = 5000;
+    private static final int PORT = 8080;
 
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
