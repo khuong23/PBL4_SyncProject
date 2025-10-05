@@ -224,6 +224,8 @@ public class NetworkService {
             
             // Đọc response với timeout
             String responseStr = reader.readLine();
+            System.out.println("DEBUG: Raw response from server: " + responseStr);
+            
             if (responseStr == null) {
                 throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
             }
@@ -234,8 +236,10 @@ public class NetworkService {
             
             // Parse response
             Response response = JsonUtils.fromJson(responseStr, Response.class);
+            System.out.println("DEBUG: Parsed response status: " + (response != null ? response.getStatus() : "null"));
+            
             if (response == null) {
-                throw new Exception("Không thể phân tích phản hồi từ server");
+                throw new Exception("Không thể phân tích phản hồi từ server. Raw response: " + responseStr);
             }
             
             return response;
