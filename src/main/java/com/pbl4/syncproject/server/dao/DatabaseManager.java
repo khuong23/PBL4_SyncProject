@@ -9,7 +9,7 @@ public class DatabaseManager {
     // DATABASE ENVIRONMENT CONFIGURATION
     // Đổi USE_LOCAL = true/false để switch giữa LOCAL và CLOUD
     // =====================================================
-    private static final boolean USE_LOCAL = true; // true = LOCAL, false = AZURE CLOUD
+    private static final boolean USE_LOCAL = false; // true = LOCAL, false = AZURE CLOUD
 
     // LOCAL Database (for testing)
     private static final String LOCAL_URL = "jdbc:mysql://127.0.0.1:3307/syncdb?serverTimezone=UTC";

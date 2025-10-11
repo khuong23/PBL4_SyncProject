@@ -322,28 +322,6 @@ public class FileService {
     }
 
     /**
-     * Get folder ID từ directory path
-     */
-    public static int getFolderIdFromDirectory(String directory) {
-        if (directory == null) return 1; // Default to shared
-
-        String folderName = directory.replace("📁 ", "").replace("/", "").trim();
-
-        switch (folderName.toLowerCase()) {
-            case "shared":
-                return 1;
-            case "documents":
-                return 2;
-            case "images":
-                return 3;
-            case "videos":
-                return 4;
-            default:
-                return 1; // Default to shared folder
-        }
-    }
-
-    /**
      * Validate file trước khi upload
      */
     public static ValidationResult validateFileForUpload(java.io.File file) {

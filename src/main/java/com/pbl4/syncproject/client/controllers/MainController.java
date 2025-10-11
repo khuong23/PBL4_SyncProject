@@ -74,7 +74,7 @@ public class MainController implements Initializable {
     private SyncAgent syncAgent;
 
     // State
-    private ObservableList<FileItem> fileItems = FXCollections.observableArrayList();
+    private ObservableList<FileItem> allFileItems = FXCollections.observableArrayList();
     private String currentUser = "admin";
     private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
     private int currentFolderId = -1; // Track selected folder ID for uploads and operations
@@ -201,47 +201,53 @@ public class MainController implements Initializable {
      * Load initial data and start services
      */
     private void loadInitialData() {
-        loadFileList();
+        loadFullDataFromServer(); // Chỉ gọi một phương thức duy nhất
         startSyncAgent();
-        selectDefaultDirectory();
     }
 
     // === FILE OPERATIONS ===
 
-    /**
-     * Load file list from server - delegate to FileService
-     */
-    private void loadFileList() {
+    private void loadFullDataFromServer() {
         if (fileService == null) {
             System.err.println("FileService chưa được khởi tạo");
             return;
         }
 
         TaskWrapper.executeAsync(
-                "Đang tải danh sách file từ database...",
+                "Đang tải dữ liệu từ server...",
                 () -> {
                     try {
-                        return fileService.fetchAndParseFileList();
+                        // Yêu cầu server trả về TẤT CẢ file và thư mục (folderId = 0)
+                        return fileService.fetchAndParseFileList(0);
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
                 },
-                this::onFileListLoaded,
-                error -> onFileListError(error),
+                this::onFullDataLoaded, // Hàm xử lý mới
+                this::onFileListError,
                 mainView
         );
     }
 
-    /**
-     * Handle successful file list loading
-     */
-    private void onFileListLoaded(List<FileItem> items) {
-        fileItems.clear();
-        fileItems.addAll(items);
+    // Đây là hàm xử lý dữ liệu tổng sau khi tải về
+    private void onFullDataLoaded(List<FileItem> items) {
+        allFileItems.clear();
+        allFileItems.addAll(items);
 
-        mainView.updateFileList(fileItems);
-        mainView.setFileCount(items.size());
-        mainView.setStatusMessage("Đã tải " + items.size() + " items từ database");
+        mainView.setStatusMessage("Đã tải " + items.size() + " files từ server.");
+        mainView.updateDirectoryTree(); // Yêu cầu View tải lại cây thư mục
+
+        // --- BẮT ĐẦU SỬA ĐỔI ---
+        // Thay vì gọi loadDirectoryFiles(1) gây lỗi, chúng ta sẽ lọc trực tiếp
+        // danh sách file cho thư mục gốc có tên là "root".
+        String rootFolderName = "root"; // Tên thư mục gốc từ CSDL
+        ObservableList<FileItem> rootFiles = fileService.filterFilesByFolder(allFileItems, rootFolderName);
+
+        // Cập nhật giao diện với danh sách file của thư mục gốc
+        mainView.updateFileList(rootFiles);
+        mainView.setStatusMessage("Thư mục '" + rootFolderName + "': " + rootFiles.size() + " mục. Vui lòng chọn thư mục để tải file lên.");
+        // KHÔNG tự động đặt currentFolderId = 1, để buộc người dùng chọn thư mục
+        // --- KẾT THÚC SỬA ĐỔI ---
 
         updateSyncStatus();
     }
@@ -258,31 +264,45 @@ public class MainController implements Initializable {
     }
 
     /**
-     * Load files for specific folder by folderId
+     * Lọc và hiển thị các file cho một thư mục cụ thể từ danh sách tổng đã có.
+     * @param folderId ID của thư mục cần hiển thị file.
      */
     private void loadDirectoryFiles(int folderId) {
-        if (fileService == null) {
-            mainView.setStatusMessage("⚠️ Vui lòng đăng nhập để xem nội dung thư mục");
+        currentFolderId = folderId; // Cập nhật folder ID hiện tại
+        String targetFolderName = findFolderNameInTree(treeDirectory.getRoot(), folderId);
+
+        if (targetFolderName == null) {
+            System.err.println("Lỗi: Không tìm thấy thư mục với ID: " + folderId);
+            mainView.updateFileList(FXCollections.observableArrayList()); // Hiển thị bảng trống
+            mainView.setStatusMessage("Không tìm thấy thông tin thư mục.");
             return;
         }
 
-        TaskWrapper.<ObservableList<FileItem>>executeAsync(
-                "Đang tải dữ liệu thư mục ID: " + folderId,
-                () -> {
-                    try {
-                        return fileService.fetchAndParseFileList(folderId);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        return FXCollections.observableArrayList();
-                    }
-                },
-                loadedFiles -> {
-                    fileItems = loadedFiles;
-                    mainView.updateFileList(loadedFiles);
-                    mainView.setStatusMessage("Thư mục ID " + folderId + ": " + loadedFiles.size() + " file");
-                },
-                mainView
-        );
+        // Lọc danh sách tổng để lấy ra các file thuộc thư mục được chọn
+        ObservableList<FileItem> filteredList = fileService.filterFilesByFolder(allFileItems, targetFolderName);
+
+        // Cập nhật giao diện với danh sách đã lọc
+        mainView.updateFileList(filteredList);
+        mainView.setStatusMessage("Thư mục '" + targetFolderName + "': " + filteredList.size() + " mục");
+    }
+
+    // Thêm phương thức mới này vào MainController.java
+    private String findFolderNameInTree(TreeItem<Folders> current, int folderId) {
+        if (current == null || current.getValue() == null) {
+            return null;
+        }
+        // Nếu ID của node hiện tại khớp, trả về tên của nó
+        if (current.getValue().getFolderId() == folderId) {
+            return current.getValue().getFolderName();
+        }
+        // Nếu không, tìm trong các node con
+        for (TreeItem<Folders> child : current.getChildren()) {
+            String found = findFolderNameInTree(child, folderId);
+            if (found != null) {
+                return found; // Tìm thấy ở nhánh con, trả về kết quả
+            }
+        }
+        return null; // Không tìm thấy trong nhánh này
     }
 
     // === SYNC AGENT OPERATIONS ===
@@ -321,15 +341,6 @@ public class MainController implements Initializable {
      */
     private void updateSyncStatus() {
         mainView.setSyncStatus("Đồng bộ: Hoạt động", true);
-    }
-
-    /**
-     * Select default directory after loading
-     * This method is deprecated - TreeView now handles selection automatically
-     */
-    private void selectDefaultDirectory() {
-        // No longer needed - folders are loaded from database and TreeView handles selection
-        // If you need to programmatically select a folder, use TreeView.getSelectionModel().select()
     }
 
     // === EVENT HANDLERS ===
@@ -420,7 +431,7 @@ public class MainController implements Initializable {
      * Refresh data
      */
     private void refresh() {
-        loadFileList();
+        loadFullDataFromServer();
         updateSyncAgentStatus();
     }
 
@@ -428,10 +439,15 @@ public class MainController implements Initializable {
      * Upload file - delegate to UploadManager
      */
     private void upload() {
-        if (currentFolderId < 0) {
-            mainView.showAlert("Lỗi", "Vui lòng chọn thư mục để tải file lên!", IMainView.AlertType.WARNING);
+        // --- BẮT ĐẦU SỬA ĐỔI ---
+        // Kiểm tra xem người dùng đã chọn một thư mục hợp lệ hay chưa.
+        // currentFolderId = 1 là thư mục gốc, chúng ta coi nó là chưa chọn.
+        // Hoặc có thể người dùng chưa chọn gì cả (giá trị vẫn là -1).
+        if (currentFolderId <= 0) { // ID thư mục hợp lệ trong CSDL bắt đầu từ 1.
+            mainView.showAlert("Lỗi Tải Lên", "Vui lòng chọn một thư mục cụ thể từ cây thư mục bên trái trước khi tải tệp lên!", IMainView.AlertType.WARNING);
             return;
         }
+        // --- KẾT THÚC SỬA ĐỔI ---
 
         FileChooser fileChooser = new FileChooser();
         fileChooser.setTitle("Chọn file để tải lên");
@@ -446,13 +462,13 @@ public class MainController implements Initializable {
 
         File selectedFile = fileChooser.showOpenDialog(btnUpload.getScene().getWindow());
         if (selectedFile != null) {
-            // Pass currentDirectory for compatibility, but UploadManager will extract folderId from it
-            // In future, can create overload that accepts folderId directly
+            // Gửi ID thư mục hiện tại đã được chọn đến UploadManager
             uploadManager.uploadFile(selectedFile, String.valueOf(currentFolderId), (file, newFileItem, success, message) -> {
                 if (success) {
                     if (newFileItem != null) {
-                        fileItems.add(newFileItem);
-                        mainView.updateFileList(fileItems);
+                        allFileItems.add(newFileItem);
+                        // Sau khi thêm file mới vào danh sách tổng, refresh lại view để hiển thị ngay
+                        loadDirectoryFiles(currentFolderId);
                     } else {
                         loadDirectoryFiles(currentFolderId); // Refresh from server
                     }

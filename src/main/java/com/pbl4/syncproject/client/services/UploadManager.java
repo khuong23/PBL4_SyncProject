@@ -80,8 +80,11 @@ public class UploadManager {
                     updateProgress(50, 100);
                     updateMessage("Đang tải lên file...");
                     
-                    // Get folder ID from current directory
-                    int folderId = FileService.getFolderIdFromDirectory(currentDirectory);
+                    // --- BẮT ĐẦU SỬA ĐỔI ---
+                    // Tham số 'currentDirectory' thực chất đang chứa chuỗi ID của thư mục (ví dụ: "3").
+                    // Chúng ta chỉ cần chuyển đổi nó thành số nguyên.
+                    int folderId = Integer.parseInt(currentDirectory);
+                    // --- KẾT THÚC SỬA ĐỔI ---
                     
                     // Upload file using NetworkService
                     Response response = networkService.uploadFile(file, folderId);
