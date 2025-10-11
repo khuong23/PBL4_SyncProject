@@ -28,7 +28,7 @@ public class FolderTreeHandler implements RequestHandler {
 
         Response res = new Response();
         // Handle root folder request
-        if(parentId == 0) {
+        if(parentId == 1) {
             try {
                 Folders root = folderDAO.getRootFolder();
                 if (root != null) {
