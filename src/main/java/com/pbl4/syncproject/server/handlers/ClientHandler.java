@@ -41,16 +41,12 @@ public class ClientHandler implements Runnable {
                     System.out.println("Received: " + input);
                     Request req = JsonUtils.fromJson(input, Request.class);
                     Response res = dispatcher.dispatch(req);
-                    String responseJson = JsonUtils.toJson(res);
-                    System.out.println("Sending response: " + responseJson);
-                    out.println(responseJson);
+                    out.println(JsonUtils.toJson(res));
                     out.flush();
                 } catch (Exception e) {
                     e.printStackTrace();
                     Response error = new Response("error", e.getMessage(), null);
-                    String errorJson = JsonUtils.toJson(error);
-                    System.out.println("Sending error response: " + errorJson);
-                    out.println(errorJson);
+                    out.println(JsonUtils.toJson(error));
                     out.flush();
                 }
             }

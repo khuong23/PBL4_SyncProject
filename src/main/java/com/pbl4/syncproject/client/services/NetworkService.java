@@ -66,8 +66,6 @@ public class NetworkService {
         } catch (IOException e) {
             throw new Exception("Lỗi đọc file: " + e.getMessage());
         } catch (Exception e) {
-            // Log error details for debugging
-            System.err.println("Upload error for " + file.getName() + ": " + e.getMessage());
             throw e;
         }
     }
@@ -76,7 +74,7 @@ public class NetworkService {
      * Upload file lên server với default folder (root)
      */
     public Response uploadFile(File file) throws Exception {
-        return uploadFile(file, 0); // 0 = root folder
+        return uploadFile(file, 0); // 1 = root folder (not 0)
     }
     
     /**
@@ -94,7 +92,7 @@ public class NetworkService {
      * Lấy danh sách files từ root folder
      */
     public Response getFileList() throws Exception {
-        return getFileList(0); // 0 = root folder
+        return getFileList(1); // 1 = root folder (not 0)
     }
     
     /**
@@ -113,18 +111,7 @@ public class NetworkService {
      * Tạo folder với parent mặc định (root)
      */
     public Response createFolder(String folderName) throws Exception {
-        return createFolder(folderName, 0);
-    }
-    
-    /**
-     * Lấy danh sách files trong folder
-     */
-    public Response getFilesList(int folderId) throws Exception {
-        JsonObject data = new JsonObject();
-        data.addProperty("folderId", folderId);
-        
-        Request request = new Request("LIST_FILES", data);
-        return sendRequest(request);
+        return createFolder(folderName, 1); // 1 = root folder (not 0)
     }
     
     /**
@@ -153,41 +140,7 @@ public class NetworkService {
             
             return response != null && "success".equals(response.getStatus());
         } catch (Exception e) {
-            System.err.println("Connection test failed: " + e.getMessage());
             return false;
-        }
-    }
-    
-    /**
-     * Test connection with detailed error message
-     */
-    public String testConnectionWithDetails() {
-        try {
-            JsonObject data = new JsonObject();
-            data.addProperty("test", "ping");
-            data.addProperty("timestamp", System.currentTimeMillis());
-            
-            Request request = new Request("PING", data);
-            Response response = sendRequest(request);
-            
-            if (response != null) {
-                if ("success".equals(response.getStatus())) {
-                    return "OK";
-                } else {
-                    String errorMsg = "Server phản hồi với status: " + response.getStatus();
-                    if (response.getMessage() != null) {
-                        errorMsg += ", message: " + response.getMessage();
-                    }
-                    System.err.println("Connection test failed: " + errorMsg);
-                    return errorMsg;
-                }
-            } else {
-                return "Server không phản hồi (response null)";
-            }
-        } catch (Exception e) {
-            String errorMsg = "Lỗi kết nối: " + e.getMessage();
-            System.err.println("Connection test exception: " + errorMsg);
-            return errorMsg;
         }
     }
     
@@ -224,8 +177,6 @@ public class NetworkService {
             
             // Đọc response với timeout
             String responseStr = reader.readLine();
-            System.out.println("DEBUG: Raw response from server: " + responseStr);
-            
             if (responseStr == null) {
                 throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
             }
@@ -236,10 +187,8 @@ public class NetworkService {
             
             // Parse response
             Response response = JsonUtils.fromJson(responseStr, Response.class);
-            System.out.println("DEBUG: Parsed response status: " + (response != null ? response.getStatus() : "null"));
-            
             if (response == null) {
-                throw new Exception("Không thể phân tích phản hồi từ server. Raw response: " + responseStr);
+                throw new Exception("Không thể phân tích phản hồi từ server");
             }
             
             return response;
@@ -257,7 +206,6 @@ public class NetworkService {
             if (e.getMessage() != null && e.getMessage().startsWith("Không thể")) {
                 throw e; // Re-throw our custom messages
             }
-            System.err.println("Network error details: " + e.getMessage());
             throw new Exception("Lỗi không xác định: " + e.getMessage(), e);
         } finally {
             // Clean up resources
@@ -266,17 +214,9 @@ public class NetworkService {
                 if (reader != null) reader.close();
                 if (socket != null && !socket.isClosed()) socket.close();
             } catch (IOException e) {
-                System.err.println("Error closing network resources: " + e.getMessage());
+                // Ignore cleanup errors
             }
         }
-    }
-    
-    /**
-     * Cập nhật server configuration
-     */
-    public void setServerConfig(String ip, int port) {
-        // TODO: Implement dynamic server config
-        // For now, using static values
     }
     
     /**
