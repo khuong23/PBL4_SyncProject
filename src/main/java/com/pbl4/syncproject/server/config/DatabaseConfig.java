@@ -10,20 +10,38 @@ import java.util.Properties;
  * Handles MySQL driver loading and connection management
  */
 public class DatabaseConfig {
-    
-    // Database configuration
-    private static final String DEFAULT_URL = "jdbc:mysql://127.0.0.1:3307/syncdb";
-    private static final String DEFAULT_USER = "root";
-    private static final String DEFAULT_PASSWORD = "123456";
+
+    // =====================================================
+    // DATABASE ENVIRONMENT CONFIGURATION
+    // Đổi USE_LOCAL = true/false để switch giữa LOCAL và CLOUD
+    // =====================================================
+    private static final boolean USE_LOCAL = true; // true = LOCAL, false = AZURE CLOUD
+
+    // LOCAL Database (for testing)
+    private static final String LOCAL_URL = "jdbc:mysql://127.0.0.1:3307/syncdb";
+    private static final String LOCAL_USER = "root";
+    private static final String LOCAL_PASSWORD = "123456";
+
+    // AZURE Cloud Database (for production)
+    private static final String CLOUD_URL = "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb"
+            + "?sslMode=REQUIRED&serverTimezone=UTC&connectTimeout=5000&socketTimeout=15000";
+    private static final String CLOUD_USER = "sync_user";
+    private static final String CLOUD_PASSWORD = "Syncpass123";
+
+    // Current configuration (auto-selected based on USE_LOCAL)
+    private static final String DEFAULT_URL = USE_LOCAL ? LOCAL_URL : CLOUD_URL;
+    private static final String DEFAULT_USER = USE_LOCAL ? LOCAL_USER : CLOUD_USER;
+    private static final String DEFAULT_PASSWORD = USE_LOCAL ? LOCAL_PASSWORD : CLOUD_PASSWORD;
+
     private static final String MYSQL_DRIVER = "com.mysql.cj.jdbc.Driver";
-    
+
     // Connection properties
     private static final String SERVER_TIMEZONE = "UTC";
     private static final String USE_SSL = "false";
     private static final String ALLOW_PUBLIC_KEY_RETRIEVAL = "true";
-    
+
     private static boolean driverLoaded = false;
-    
+
     /**
      * Initialize and load MySQL driver
      */
@@ -40,27 +58,27 @@ public class DatabaseConfig {
             }
         }
     }
-    
+
     /**
      * Create database connection with default settings
      */
     public static Connection createConnection() throws SQLException {
         return createConnection(DEFAULT_URL, DEFAULT_USER, DEFAULT_PASSWORD);
     }
-    
+
     /**
      * Create database connection with custom parameters
      */
     public static Connection createConnection(String url, String user, String password) throws SQLException {
         initializeDriver();
-        
+
         Properties props = new Properties();
         props.setProperty("user", user);
         props.setProperty("password", password);
         props.setProperty("serverTimezone", SERVER_TIMEZONE);
         props.setProperty("useSSL", USE_SSL);
         props.setProperty("allowPublicKeyRetrieval", ALLOW_PUBLIC_KEY_RETRIEVAL);
-        
+
         try {
             Connection connection = DriverManager.getConnection(url, props);
             System.out.println("✅ Database connected successfully to: " + getServerInfo(url));
@@ -72,7 +90,7 @@ public class DatabaseConfig {
             throw e;
         }
     }
-    
+
     /**
      * Test database connection
      */
@@ -84,7 +102,7 @@ public class DatabaseConfig {
             return false;
         }
     }
-    
+
     /**
      * Test database connection with custom parameters
      */
@@ -96,7 +114,7 @@ public class DatabaseConfig {
             return false;
         }
     }
-    
+
     /**
      * Extract server info from URL for logging
      */
@@ -112,7 +130,7 @@ public class DatabaseConfig {
         }
         return url;
     }
-    
+
     /**
      * Get database configuration info for debugging
      */

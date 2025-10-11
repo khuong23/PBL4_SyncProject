@@ -10,15 +10,12 @@ import java.util.List;
 import java.util.ArrayList;
 
 public class FilesDAO {
-    private final Connection dbConnection;
-
-    public FilesDAO(Connection dbConnection) {
-        this.dbConnection = dbConnection;
-    }
-
-    public List<Files> getFilesInFolder(int folderId) throws SQLException {
+    
+    public FilesDAO() {
+        // Constructor không cần connection nữa
+    }    public List<Files> getFilesInFolder(Connection connection, int folderId) throws SQLException {
         String sql = "SELECT * FROM Files WHERE FolderID = ?";
-        try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
+        try (PreparedStatement stm = connection.prepareStatement(sql)) {
             stm.setInt(1, folderId);
             try (ResultSet rs = stm.executeQuery()) {
                 List<Files> list = new ArrayList<>();

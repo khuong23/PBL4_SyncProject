@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.pbl4.syncproject.common.dispatcher.RequestHandler;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
+import com.pbl4.syncproject.server.dao.DatabaseManager;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -15,29 +16,25 @@ import java.text.SimpleDateFormat;
  * Handler để lấy danh sách files và folders từ database
  */
 public class FileListHandler implements RequestHandler {
-    private final Connection dbConnection;
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm");
-
-    public FileListHandler(Connection dbConnection) {
-        this.dbConnection = dbConnection;
-    }
 
     @Override
     public Response handle(Request request) {
         Response response = new Response();
         
-        try {
+        // Tạo connection riêng cho mỗi request
+        try (Connection dbConnection = DatabaseManager.getConnection()) {
             JsonObject data = request.getData();
             int folderId = data != null && data.has("folderId") ? data.get("folderId").getAsInt() : 0;
             
             JsonObject responseData = new JsonObject();
             
             // Lấy danh sách folders
-            JsonArray folders = getFolders(folderId);
+            JsonArray folders = getFolders(folderId, dbConnection);
             responseData.add("folders", folders);
             
             // Lấy danh sách files
-            JsonArray files = getFiles(folderId);
+            JsonArray files = getFiles(folderId, dbConnection);
             responseData.add("files", files);
             
             response.setStatus("success");
@@ -56,7 +53,7 @@ public class FileListHandler implements RequestHandler {
     /**
      * Lấy danh sách folders con của folder hiện tại
      */
-    private JsonArray getFolders(int parentFolderId) throws Exception {
+    private JsonArray getFolders(int parentFolderId, Connection dbConnection) throws Exception {
         JsonArray folders = new JsonArray();
         
         String sql = "SELECT FolderID, FolderName, LastModified, CreatedAt FROM Folders WHERE ParentFolderID ";
@@ -109,7 +106,7 @@ public class FileListHandler implements RequestHandler {
     /**
      * Lấy danh sách files trong folder hiện tại
      */
-    private JsonArray getFiles(int folderId) throws Exception {
+    private JsonArray getFiles(int folderId, Connection dbConnection) throws Exception {
         JsonArray files = new JsonArray();
         
         String sql;

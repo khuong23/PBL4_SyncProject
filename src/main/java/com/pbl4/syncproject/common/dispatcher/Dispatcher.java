@@ -14,10 +14,10 @@ import java.util.Map;
 public class Dispatcher {
     private final Map<String, RequestHandler> handlers = new HashMap<>();
 
-    public Dispatcher(Connection dbConnection) {
-        handlers.put("LOGIN", new LoginHandler(dbConnection));
-        handlers.put("FOLDER_TREE", new FolderTreeHandler(dbConnection));
-        handlers.put("GET_FILE_LIST", new FileListHandler(dbConnection));
+    public Dispatcher() {
+        handlers.put("LOGIN", new LoginHandler());
+        handlers.put("FOLDER_TREE", new FolderTreeHandler());
+        handlers.put("GET_FILE_LIST", new FileListHandler());
         handlers.put("UPLOAD_FILE", new UploadHandle()); // UploadHandle không nhận Connection parameter
     }
 

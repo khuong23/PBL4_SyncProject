@@ -102,6 +102,12 @@ public class LoginController {
                 try {
                     FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main-refactored.fxml"));
                     Parent root = loader.load();
+                    
+                    // Get MainController và set server address
+                    MainController mainController = loader.getController();
+                    if (mainController != null) {
+                        mainController.setServerAddress(ip, port);
+                    }
 
                     Stage mainStage = new Stage();
                     mainStage.setTitle("Hệ thống đồng bộ dữ liệu - " + username);

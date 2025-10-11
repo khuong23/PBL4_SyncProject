@@ -5,13 +5,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
 public class UserDAO {
-    private final Connection connection;
 
-    public UserDAO(Connection connection) {
-        this.connection = connection;
+    public UserDAO() {
+        // Constructor không cần connection nữa  
     }
 
-    public boolean checkLogin(String username, String password) {
+    public boolean checkLogin(Connection connection, String username, String password) {
         String sql = "SELECT * FROM Users WHERE Username=? AND PasswordHash=?";
         try (PreparedStatement stmt = connection.prepareStatement(sql)) {
             stmt.setString(1, username);

@@ -20,12 +20,10 @@ import java.sql.SQLException;
 public class ClientHandler implements Runnable {
     private final Socket socket;
     private final Dispatcher dispatcher;
-    private final Connection dbConnection;
 
     public ClientHandler(Socket socket) throws Exception {
         this.socket = socket;
-        this.dbConnection = DatabaseManager.getConnection();
-        this.dispatcher = new Dispatcher(dbConnection);
+        this.dispatcher = new Dispatcher(); // No shared connection
     }
 
     @Override
@@ -53,13 +51,7 @@ public class ClientHandler implements Runnable {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            try {
-                if (dbConnection != null && !dbConnection.isClosed()) {
-                    dbConnection.close();
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            // No need to close shared dbConnection anymore
             try {
                 if (socket != null && !socket.isClosed()) {
                     socket.close();

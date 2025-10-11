@@ -15,15 +15,67 @@ import java.util.Base64;
  * Tách biệt network logic khỏi UI controller
  */
 public class NetworkService {
-    private static final String SERVER_IP = "20.89.65.146";
-    private static final int SERVER_PORT = 8080;
     private static final int TIMEOUT_MS = 60000; // Tăng lên 60 seconds cho cloud server
     private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
+
+    private String serverIP;
+    private int serverPort;
+
+    /**
+     * Constructor - PHẢI set server address sau khi tạo object
+     */
+    public NetworkService() {
+        // Không set default IP/port - phải được set từ login
+        this.serverIP = null;
+        this.serverPort = 0;
+    }
+
+    /**
+     * Constructor với custom server IP và port (recommended)
+     */
+    public NetworkService(String serverIP, int serverPort) {
+        this.serverIP = serverIP;
+        this.serverPort = serverPort;
+    }
+
+    /**
+     * Set server IP và port (BẮT BUỘC gọi trước khi sử dụng các method khác)
+     */
+    public void setServerAddress(String serverIP, int serverPort) {
+        this.serverIP = serverIP;
+        this.serverPort = serverPort;
+        System.out.println("📍 NetworkService configured: " + serverIP + ":" + serverPort);
+    }
+
+    /**
+     * Kiểm tra xem server address đã được set chưa
+     */
+    private void validateServerAddress() throws Exception {
+        if (serverIP == null || serverIP.trim().isEmpty() || serverPort <= 0) {
+            throw new Exception("Server address chưa được thiết lập! Vui lòng gọi setServerAddress() trước.");
+        }
+    }
+
+    /**
+     * Get current server IP
+     */
+    public String getServerIP() {
+        return this.serverIP;
+    }
+
+    /**
+     * Get current server port
+     */
+    public int getServerPort() {
+        return this.serverPort;
+    }
 
     /**
      * Upload file lên server
      */
     public Response uploadFile(File file, int folderId) throws Exception {
+        validateServerAddress(); // Kiểm tra server address trước khi sử dụng
+        
         // Validate file size
         if (file.length() > MAX_FILE_SIZE) {
             throw new Exception("File quá lớn. Kích thước tối đa: " + formatFileSize(MAX_FILE_SIZE));
@@ -56,7 +108,7 @@ public class NetworkService {
             data.addProperty("fileSize", file.length());
             data.addProperty("lastModified", file.lastModified());
 
-            Request request = new Request("UPLOAD", data);
+            Request request = new Request("UPLOAD_FILE", data);
 
             // Gửi request và nhận response
             return sendRequest(request);
@@ -81,6 +133,8 @@ public class NetworkService {
      * Lấy danh sách files và folders từ server
      */
     public Response getFileList(int folderId) throws Exception {
+        validateServerAddress();
+        
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
 
@@ -99,6 +153,8 @@ public class NetworkService {
      * Tạo folder trên server
      */
     public Response createFolder(String folderName, int parentFolderId) throws Exception {
+        validateServerAddress();
+        
         JsonObject data = new JsonObject();
         data.addProperty("folderName", folderName);
         data.addProperty("parentFolderId", parentFolderId);
@@ -119,6 +175,8 @@ public class NetworkService {
      * ParentId = 1 để lấy các folder con của root (shared, documents, images, videos)
      */
     public Response getFolderTree() throws Exception {
+        validateServerAddress();
+        
         JsonObject data = new JsonObject();
         data.addProperty("parentId", 1); // Changed from 0 to 1 to get children of root folder
         Request request = new Request("FOLDER_TREE", data);
@@ -129,6 +187,8 @@ public class NetworkService {
      * Download file từ server
      */
     public Response downloadFile(String fileName, int folderId) throws Exception {
+        validateServerAddress();
+        
         JsonObject data = new JsonObject();
         data.addProperty("fileName", fileName);
         data.addProperty("folderId", folderId);
@@ -142,7 +202,9 @@ public class NetworkService {
      */
     public boolean testConnection() {
         try {
-            System.out.println("DEBUG: Testing connection to " + SERVER_IP + ":" + SERVER_PORT);
+            validateServerAddress();
+            
+            System.out.println("DEBUG: Testing connection to " + serverIP + ":" + serverPort);
 
             // Sử dụng LOGIN action vì server chỉ hỗ trợ LOGIN và FOLDER_TREE
             JsonObject data = new JsonObject();
@@ -174,15 +236,17 @@ public class NetworkService {
      * Gửi request lên server và nhận response
      */
     private Response sendRequest(Request request) throws Exception {
+        validateServerAddress(); // Double check
+        
         Socket socket = null;
         PrintWriter writer = null;
         BufferedReader reader = null;
 
         try {
             // Create connection with longer timeout for cloud server
-            System.out.println("DEBUG: Connecting to " + SERVER_IP + ":" + SERVER_PORT);
+            System.out.println("DEBUG: Connecting to " + serverIP + ":" + serverPort);
             socket = new Socket();
-            socket.connect(new java.net.InetSocketAddress(SERVER_IP, SERVER_PORT), 20000); // 20s connect timeout for cloud
+            socket.connect(new java.net.InetSocketAddress(serverIP, serverPort), 20000); // 20s connect timeout for cloud
             socket.setSoTimeout(TIMEOUT_MS);
             System.out.println("DEBUG: Socket connected successfully");
 
@@ -226,12 +290,12 @@ public class NetworkService {
             return response;
 
         } catch (java.net.ConnectException e) {
-            throw new Exception("Không thể kết nối tới server " + SERVER_IP + ":" + SERVER_PORT +
+            throw new Exception("Không thể kết nối tới server " + serverIP + ":" + serverPort +
                     ". Server có thể đang tắt hoặc địa chỉ không đúng.");
         } catch (java.net.SocketTimeoutException e) {
             throw new Exception("Kết nối tới server bị timeout. Vui lòng thử lại sau.");
         } catch (java.net.UnknownHostException e) {
-            throw new Exception("Không thể tìm thấy server tại địa chỉ: " + SERVER_IP);
+            throw new Exception("Không thể tìm thấy server tại địa chỉ: " + serverIP);
         } catch (IOException e) {
             throw new Exception("Lỗi kết nối mạng: " + e.getMessage());
         } catch (Exception e) {
@@ -255,7 +319,7 @@ public class NetworkService {
      * Get current server info
      */
     public String getServerInfo() {
-        return SERVER_IP + ":" + SERVER_PORT;
+        return serverIP + ":" + serverPort;
     }
 
     /**

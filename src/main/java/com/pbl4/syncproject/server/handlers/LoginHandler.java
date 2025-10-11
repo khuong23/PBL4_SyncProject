@@ -5,15 +5,11 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.UserDAO;
+import com.pbl4.syncproject.server.dao.DatabaseManager;
 
 import java.sql.Connection;
 
 public class LoginHandler implements RequestHandler {
-    private final UserDAO userDAO;
-
-    public LoginHandler(Connection connection) {
-        this.userDAO = new UserDAO(connection);
-    }
 
     @Override
     public Response handle(Request req) {
@@ -22,13 +18,25 @@ public class LoginHandler implements RequestHandler {
         String password = data.get("password").getAsString();
 
         Response res = new Response();
-        if (userDAO.checkLogin(username, password)) {
-            res.setStatus("success");
-            res.setMessage("Login successful");
-        } else {
+        
+        // Tạo connection riêng cho mỗi request
+        try (Connection connection = DatabaseManager.getConnection()) {
+            UserDAO userDAO = new UserDAO();
+            
+            if (userDAO.checkLogin(connection, username, password)) {
+                res.setStatus("success");
+                res.setMessage("Login successful");
+            } else {
+                res.setStatus("error");
+                res.setMessage("Invalid username or password");
+            }
+            
+        } catch (Exception e) {
+            e.printStackTrace();
             res.setStatus("error");
-            res.setMessage("Invalid username or password");
+            res.setMessage("Database connection failed: " + e.getMessage());
         }
+        
         return res;
     }
 }

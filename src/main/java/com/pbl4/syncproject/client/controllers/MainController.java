@@ -81,26 +81,44 @@ public class MainController implements Initializable {
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
-        initializeServices();
+        // Chỉ initialize view và setup handlers
+        // Services sẽ được khởi tạo sau khi login thành công
         initializeView();
         setupEventHandlers();
-        loadInitialData();
+        // loadInitialData() sẽ được gọi sau trong setServerAddress()
     }
 
     // === INITIALIZATION METHODS ===
 
     /**
-     * Initialize services theo dependency order
+     * Set server address from login screen
+     * BẮT BUỘC phải gọi method này từ LoginController sau khi login thành công
      */
-    private void initializeServices() {
-        networkService = new NetworkService();
+    public void setServerAddress(String serverIP, int serverPort) {
+        // Initialize services with server address from login
+        networkService = new NetworkService(serverIP, serverPort);
         fileService = new FileService(networkService);
         syncAgent = new SyncAgent(networkService);
+
+        // Update connection status
+        if (mainView != null) {
+            mainView.setConnectionStatus("Kết nối: " + serverIP + ":" + serverPort, true);
+            mainView.setNetworkStatus("Mạng: Đã kết nối", true);
+
+            // Update FileService trong MainView (sẽ tự động refresh folder tree)
+            mainView.setFileService(fileService);
+
+            // Now that we have networkService, initialize uploadManager
+            uploadManager = new UploadManager(networkService, mainView);
+
+            // Load initial data sau khi đã có services
+            loadInitialData();
+        }
     }
 
     /**
      * Initialize MainView wrapper
-     * Updated to include FileService for dynamic folder tree loading
+     * FileService sẽ được set sau khi login thành công
      */
     private void initializeView() {
         mainView = new MainView(
@@ -125,20 +143,20 @@ public class MainController implements Initializable {
                 colPermissions,        // 19
                 colSyncStatus,         // 20
                 colActions,            // 21
-                fileService            // 22
+                null                   // 22 - fileService sẽ được set sau
         );
 
-        // Now we can create UploadManager with mainView
-        uploadManager = new UploadManager(networkService, mainView);
+        // UploadManager sẽ được khởi tạo sau trong setServerAddress() khi có networkService
+        // uploadManager = new UploadManager(networkService, mainView);
 
         // Setup TableView columns manually to avoid module access issues
         setupTableColumns();
 
         // Setup initial UI state
         mainView.setUserInfo("User: " + currentUser);
-        mainView.setStatusMessage("Đã kết nối thành công");
-        mainView.setConnectionStatus("● Kết nối: Thành công", true);
-        mainView.setNetworkStatus("Mạng: Kết nối", true);
+        mainView.setStatusMessage("Đang chờ kết nối server...");
+        mainView.setConnectionStatus("● Chờ đăng nhập", false);
+        mainView.setNetworkStatus("Mạng: Chưa kết nối", false);
     }
 
     /**
@@ -194,6 +212,11 @@ public class MainController implements Initializable {
      * Load file list from server - delegate to FileService
      */
     private void loadFileList() {
+        if (fileService == null) {
+            System.err.println("FileService chưa được khởi tạo");
+            return;
+        }
+
         TaskWrapper.executeAsync(
                 "Đang tải danh sách file từ database...",
                 () -> {
@@ -238,6 +261,11 @@ public class MainController implements Initializable {
      * Load files for specific folder by folderId
      */
     private void loadDirectoryFiles(int folderId) {
+        if (fileService == null) {
+            mainView.setStatusMessage("⚠️ Vui lòng đăng nhập để xem nội dung thư mục");
+            return;
+        }
+
         TaskWrapper.<ObservableList<FileItem>>executeAsync(
                 "Đang tải dữ liệu thư mục ID: " + folderId,
                 () -> {

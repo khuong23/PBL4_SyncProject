@@ -17,22 +17,15 @@ import java.sql.Timestamp;
 import java.util.Base64;
 
 public class UploadHandle implements RequestHandler {
-    private final Connection connection;
 
     public UploadHandle() {
-        Connection conn = null;
-        try {
-            conn = DatabaseManager.getConnection();
-        } catch (SQLException e) {
-            e.printStackTrace();
-            // You may want to handle this more gracefully in production
-        }
-        this.connection = conn;
+        // Constructor không cần connection nữa
     }
 
     @Override
     public Response handle(Request req) {
-        try {
+        // Dùng try-with-resources để tự động quản lý connection
+        try (Connection connection = DatabaseManager.getConnection()) {
             JsonObject data = req.getData();
             String fileName = data.get("fileName").getAsString();
             String base64Content = data.get("fileContent").getAsString();
@@ -43,7 +36,7 @@ public class UploadHandle implements RequestHandler {
                 folderId = data.get("folderId").getAsInt();
             } else {
                 // Tạo hoặc lấy root folder (ParentFolderID = NULL)
-                folderId = ensureRootFolder();
+                folderId = ensureRootFolder(connection);
             }
 
             byte[] fileBytes = Base64.getDecoder().decode(base64Content);
@@ -115,7 +108,7 @@ public class UploadHandle implements RequestHandler {
     }
     
     // Đảm bảo có root folder, tạo nếu chưa có
-    private int ensureRootFolder() throws SQLException {
+    private int ensureRootFolder(Connection connection) throws SQLException {
         // Kiểm tra xem đã có root folder chưa
         String checkSql = "SELECT FolderID FROM Folders WHERE ParentFolderID IS NULL LIMIT 1";
         try (PreparedStatement checkStmt = connection.prepareStatement(checkSql)) {

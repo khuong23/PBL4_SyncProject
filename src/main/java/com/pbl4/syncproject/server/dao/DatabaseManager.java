@@ -3,67 +3,42 @@ package com.pbl4.syncproject.server.dao;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.util.List;
-import java.util.ArrayList;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 
 public class DatabaseManager {
-    private static final String URL =
-            "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb"
-                    + "?sslMode=REQUIRED&serverTimezone=UTC&connectTimeout=5000&socketTimeout=15000";
-    private static final String USER = "sync_user";      // Flexible: không có @
-    private static final String PASSWORD = "Syncpass123";
+    // =====================================================
+    // DATABASE ENVIRONMENT CONFIGURATION
+    // Đổi USE_LOCAL = true/false để switch giữa LOCAL và CLOUD
+    // =====================================================
+    private static final boolean USE_LOCAL = true; // true = LOCAL, false = AZURE CLOUD
 
+    // LOCAL Database (for testing)
+    private static final String LOCAL_URL = "jdbc:mysql://127.0.0.1:3307/syncdb?serverTimezone=UTC";
+    private static final String LOCAL_USER = "root";
+    private static final String LOCAL_PASSWORD = "123456";
 
-    private static Connection connection;
+    // AZURE Cloud Database (for production)
+    private static final String CLOUD_URL = "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb"
+            + "?sslMode=REQUIRED&serverTimezone=UTC&connectTimeout=5000&socketTimeout=15000";
+    private static final String CLOUD_USER = "sync_user";
+    private static final String CLOUD_PASSWORD = "Syncpass123";
 
-    // Mở kết nối
+    // Current configuration (auto-selected based on USE_LOCAL)
+    private static final String URL = USE_LOCAL ? LOCAL_URL : CLOUD_URL;
+    private static final String USER = USE_LOCAL ? LOCAL_USER : CLOUD_USER;
+    private static final String PASSWORD = USE_LOCAL ? LOCAL_PASSWORD : CLOUD_PASSWORD;
+
+    // ❌ XÓA static Connection - đây là nguyên nhân chính gây lỗi!
+    // private static Connection connection;
+
+    /**
+     * Phương thức này giờ đây sẽ LUÔN TẠO MỘT KẾT NỐI MỚI.
+     * Điều này đảm bảo mỗi luồng client có kết nối riêng, tránh xung đột.
+     * @return một đối tượng Connection mới.
+     * @throws SQLException nếu không thể tạo kết nối.
+     */
     public static Connection getConnection() throws SQLException {
-        if (connection == null || connection.isClosed()) {
-            connection = DriverManager.getConnection(URL, USER, PASSWORD);
-            System.out.println("✅ Database connected");
-        }
-        return connection;
-    }
-
-    // Đóng kết nối (nếu cần)
-    public static void closeConnection() {
-        try {
-            if (connection != null && !connection.isClosed()) {
-                connection.close();
-                System.out.println("🔌 Database connection closed");
-            }
-        } catch (SQLException e) {
-            System.err.println("❌ Error closing DB: " + e.getMessage());
-        }
-    }
-
-    public List<String> getSubFolders(int parentFolderId) throws SQLException {
-        List<String> folders = new ArrayList<>();
-        String sql = "SELECT FolderName FROM Folders WHERE ParentFolderID = ?";
-        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            stmt.setInt(1, parentFolderId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    folders.add(rs.getString("FolderName"));
-                }
-            }
-        }
-        return folders;
-    }
-
-    public List<String> getFilesInFolder(int folderId) throws SQLException {
-        List<String> files = new ArrayList<>();
-        String sql = "SELECT FileName FROM Files WHERE FolderID = ?";
-        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            stmt.setInt(1, folderId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    files.add(rs.getString("FileName"));
-                }
-            }
-        }
-        return files;
+        String env = USE_LOCAL ? "LOCAL (Testing)" : "AZURE CLOUD (Production)";
+        System.out.println("✅ Creating new DB connection for environment: " + env);
+        return DriverManager.getConnection(URL, USER, PASSWORD);
     }
 }

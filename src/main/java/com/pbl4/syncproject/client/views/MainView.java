@@ -99,9 +99,40 @@ public class MainView implements IMainView {
         this.colPermissions = colPermissions;
         this.colSyncStatus = colSyncStatus;
         this.colActions = colActions;
-        this.fileService = fileService;
+        this.fileService = fileService; // Có thể null ban đầu
 
         initializeView();
+    }
+
+    /**
+     * Set FileService sau khi login thành công
+     */
+    @Override
+    public void setFileService(FileService fileService) {
+        this.fileService = fileService;
+        System.out.println("📁 FileService đã được cập nhật trong MainView");
+        
+        // Tự động refresh folder tree sau khi FileService được set
+        if (fileService != null) {
+            refreshFolderTree();
+        }
+    }
+
+    /**
+     * Refresh folder tree - gọi sau khi login thành công hoặc khi cần reload folders
+     * Implementation của IMainView interface
+     */
+    @Override
+    public void refreshFolderTree() {
+        if (treeDirectory != null && treeDirectory.getRoot() != null) {
+            if (fileService != null) {
+                System.out.println("🔄 Refreshing folder tree từ database...");
+                loadFoldersFromDatabase(treeDirectory.getRoot());
+            } else {
+                System.out.println("⚠️ FileService chưa sẵn sàng, sử dụng default folders");
+                setupDefaultFolders(treeDirectory.getRoot());
+            }
+        }
     }
 
     /**
@@ -206,8 +237,11 @@ public class MainView implements IMainView {
         treeDirectory.setRoot(rootItem);
         treeDirectory.setShowRoot(true);
 
-        // Load from DB asynchronously
-        loadFoldersFromDatabase(rootItem);
+        // KHÔNG load từ DB ngay lập tức - chỉ load sau khi FileService được set
+        // loadFoldersFromDatabase(rootItem);
+        
+        // Setup default folders ban đầu
+        setupDefaultFolders(rootItem);
 
         // Selection listener - now receives Folders object
         treeDirectory.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {

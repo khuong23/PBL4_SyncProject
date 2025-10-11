@@ -1,6 +1,7 @@
 package com.pbl4.syncproject.client.views;
 
 import com.pbl4.syncproject.client.models.FileItem;
+import com.pbl4.syncproject.client.services.FileService;
 import javafx.collections.ObservableList;
 
 /**
@@ -8,6 +9,10 @@ import javafx.collections.ObservableList;
  * Tách biệt business logic khỏi presentation logic
  */
 public interface IMainView {
+
+    // Service Management Methods
+    void setFileService(FileService fileService);
+    void refreshFolderTree();
 
     // User Information Methods
     void setUserInfo(String userInfo);
