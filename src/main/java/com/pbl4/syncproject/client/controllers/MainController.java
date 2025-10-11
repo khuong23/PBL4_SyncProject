@@ -8,6 +8,7 @@ import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
+import com.pbl4.syncproject.common.model.Folders;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
@@ -53,7 +54,7 @@ public class MainController implements Initializable {
     @FXML private TextField txtSearch;
     @FXML private ComboBox<String> cmbViewMode;
     @FXML private ComboBox<String> cmbSortBy;
-    @FXML private TreeView<String> treeDirectory;
+    @FXML private TreeView<Folders> treeDirectory;
     @FXML private ProgressBar progressSync;
 
     @FXML private TableView<FileItem> tableFiles;
@@ -71,11 +72,12 @@ public class MainController implements Initializable {
     private FileService fileService;
     private UploadManager uploadManager;
     private SyncAgent syncAgent;
-    
+
     // State
     private ObservableList<FileItem> fileItems = FXCollections.observableArrayList();
     private String currentUser = "admin";
-    private String currentDirectory = "/shared";
+    private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
+    private int currentFolderId = -1; // Track selected folder ID for uploads and operations
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
@@ -98,24 +100,66 @@ public class MainController implements Initializable {
 
     /**
      * Initialize MainView wrapper
+     * Updated to include FileService for dynamic folder tree loading
      */
     private void initializeView() {
         mainView = new MainView(
-            lblUserInfo, lblConnectionStatus, lblSyncStatus, lblSyncProgress,
-            lblStatusMessage, lblFileCount, lblSelectedItems, lblNetworkStatus,
-            txtSearch, cmbViewMode, cmbSortBy, treeDirectory, progressSync,
-            tableFiles, colFileName, colFileSize, colFileType, colLastModified,
-            colPermissions, colSyncStatus, colActions
+                lblUserInfo,           // 1
+                lblConnectionStatus,   // 2
+                lblSyncStatus,         // 3
+                lblSyncProgress,       // 4
+                lblStatusMessage,      // 5
+                lblFileCount,          // 6
+                lblSelectedItems,      // 7
+                lblNetworkStatus,      // 8
+                txtSearch,             // 9
+                cmbViewMode,           // 10
+                cmbSortBy,             // 11
+                treeDirectory,         // 12
+                progressSync,          // 13
+                tableFiles,            // 14
+                colFileName,           // 15
+                colFileSize,           // 16
+                colFileType,           // 17
+                colLastModified,       // 18
+                colPermissions,        // 19
+                colSyncStatus,         // 20
+                colActions,            // 21
+                fileService            // 22
         );
 
         // Now we can create UploadManager with mainView
         uploadManager = new UploadManager(networkService, mainView);
+
+        // Setup TableView columns manually to avoid module access issues
+        setupTableColumns();
 
         // Setup initial UI state
         mainView.setUserInfo("User: " + currentUser);
         mainView.setStatusMessage("Đã kết nối thành công");
         mainView.setConnectionStatus("● Kết nối: Thành công", true);
         mainView.setNetworkStatus("Mạng: Kết nối", true);
+    }
+
+    /**
+     * Setup TableView columns manually to avoid JavaFX module access issues
+     */
+    private void setupTableColumns() {
+        // Setup cell value factories manually instead of using PropertyValueFactory
+        colFileName.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileName()));
+        colFileSize.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileSize()));
+        colFileType.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileType()));
+        colLastModified.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getLastModified()));
+        colPermissions.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getPermissions()));
+        colSyncStatus.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getSyncStatus()));
+        colActions.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty("Actions")); // Placeholder for action buttons
     }
 
     /**
@@ -129,7 +173,7 @@ public class MainController implements Initializable {
         mainView.setOnPermissions(this::handlePermissions);
         mainView.setOnSettings(this::handleSettings);
         mainView.setOnSearch(this::handleSearch);
-        
+
         mainView.setOnDirectorySelected(this::handleDirectorySelected);
         mainView.setOnFileSelected(this::handleFileSelected);
         mainView.setOnFileDoubleClick(this::handleFileAction);
@@ -151,17 +195,17 @@ public class MainController implements Initializable {
      */
     private void loadFileList() {
         TaskWrapper.executeAsync(
-            "Đang tải danh sách file từ database...",
-            () -> {
-                try {
-                    return fileService.fetchAndParseFileList();
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            },
-            this::onFileListLoaded,
-            error -> onFileListError(error),
-            mainView
+                "Đang tải danh sách file từ database...",
+                () -> {
+                    try {
+                        return fileService.fetchAndParseFileList();
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
+                this::onFileListLoaded,
+                error -> onFileListError(error),
+                mainView
         );
     }
 
@@ -171,11 +215,11 @@ public class MainController implements Initializable {
     private void onFileListLoaded(List<FileItem> items) {
         fileItems.clear();
         fileItems.addAll(items);
-        
+
         mainView.updateFileList(fileItems);
         mainView.setFileCount(items.size());
         mainView.setStatusMessage("Đã tải " + items.size() + " items từ database");
-        
+
         updateSyncStatus();
     }
 
@@ -184,42 +228,33 @@ public class MainController implements Initializable {
      */
     private void onFileListError(String error) {
         mainView.setStatusMessage("Lỗi: " + error);
-        mainView.showAlert("Lỗi kết nối", 
-            "Không thể tải dữ liệu từ server:\\n" + error + 
-            "\\n\\nVui lòng:\\n1. Kiểm tra ServerApp đã chạy\\n2. Kiểm tra kết nối mạng", 
-            IMainView.AlertType.ERROR);
+        mainView.showAlert("Lỗi kết nối",
+                "Không thể tải dữ liệu từ server:\\n" + error +
+                        "\\n\\nVui lòng:\\n1. Kiểm tra ServerApp đã chạy\\n2. Kiểm tra kết nối mạng",
+                IMainView.AlertType.ERROR);
     }
 
     /**
-     * Load files for specific directory
+     * Load files for specific folder by folderId
      */
-    private void loadDirectoryFiles(String directory) {
-        TaskWrapper.executeAsync(
-            "Đang tải dữ liệu thư mục: " + directory,
-            () -> filterFilesByDirectory(directory),
-            loadedFiles -> {
-                mainView.updateFileList(loadedFiles);
-                String folderName = directory.replace("📁 ", "").trim();
-                mainView.setStatusMessage("Thư mục " + folderName + ": " + loadedFiles.size() + " file");
-            },
-            mainView
+    private void loadDirectoryFiles(int folderId) {
+        TaskWrapper.<ObservableList<FileItem>>executeAsync(
+                "Đang tải dữ liệu thư mục ID: " + folderId,
+                () -> {
+                    try {
+                        return fileService.fetchAndParseFileList(folderId);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        return FXCollections.observableArrayList();
+                    }
+                },
+                loadedFiles -> {
+                    fileItems = loadedFiles;
+                    mainView.updateFileList(loadedFiles);
+                    mainView.setStatusMessage("Thư mục ID " + folderId + ": " + loadedFiles.size() + " file");
+                },
+                mainView
         );
-    }
-
-    /**
-     * Filter files by directory - pure logic, no side effects
-     */
-    private ObservableList<FileItem> filterFilesByDirectory(String directory) {
-        ObservableList<FileItem> filteredFiles = FXCollections.observableArrayList();
-        String folderName = directory.replace("📁 ", "").trim();
-        
-        for (FileItem item : fileItems) {
-            if (item.getFolderName() != null && item.getFolderName().equals(folderName)) {
-                filteredFiles.add(item);
-            }
-        }
-        
-        return filteredFiles;
     }
 
     // === SYNC AGENT OPERATIONS ===
@@ -262,21 +297,11 @@ public class MainController implements Initializable {
 
     /**
      * Select default directory after loading
+     * This method is deprecated - TreeView now handles selection automatically
      */
     private void selectDefaultDirectory() {
-        TaskWrapper.executeAsync(
-            null,
-            () -> {
-                try {
-                    Thread.sleep(1000); // Wait for data loading
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                return "shared";
-            },
-            selectedFolder -> handleDirectorySelected("📁 " + selectedFolder),
-            mainView
-        );
+        // No longer needed - folders are loaded from database and TreeView handles selection
+        // If you need to programmatically select a folder, use TreeView.getSelectionModel().select()
     }
 
     // === EVENT HANDLERS ===
@@ -292,10 +317,14 @@ public class MainController implements Initializable {
     /**
      * Handle directory selection
      */
-    private void handleDirectorySelected(String directory) {
-        currentDirectory = directory;
-        loadDirectoryFiles(directory);
-        mainView.setStatusMessage("Đã chọn thư mục: " + directory);
+    private void handleDirectorySelected(Folders folder) {
+        if (folder == null) {
+            return;
+        }
+        currentFolderId = folder.getFolderId();
+        currentDirectory = folder.getFolderName(); // Keep for display purposes
+        loadDirectoryFiles(folder.getFolderId());
+        mainView.setStatusMessage("Đã chọn thư mục: " + folder.getFolderName());
     }
 
     /**
@@ -320,8 +349,8 @@ public class MainController implements Initializable {
                 deleteFile(fileItem);
                 break;
             default:
-                mainView.showAlert("Lỗi", "Hành động không được hỗ trợ: " + action, 
-                                 IMainView.AlertType.ERROR);
+                mainView.showAlert("Lỗi", "Hành động không được hỗ trợ: " + action,
+                        IMainView.AlertType.ERROR);
         }
     }
 
@@ -332,29 +361,29 @@ public class MainController implements Initializable {
      */
     private void logout() {
         boolean confirmed = mainView.showConfirmDialog(
-            "Xác nhận đăng xuất", 
-            "Bạn có chắc chắn muốn đăng xuất không?"
+                "Xác nhận đăng xuất",
+                "Bạn có chắc chắn muốn đăng xuất không?"
         );
-        
+
         if (confirmed) {
             try {
                 cleanup();
-                
+
                 Stage currentStage = (Stage) btnLogout.getScene().getWindow();
-                
+
                 FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/login.fxml"));
                 Parent root = loader.load();
-                
+
                 Stage loginStage = new Stage();
                 loginStage.setTitle("Đăng nhập - File Sync");
                 loginStage.setScene(new Scene(root, 400, 300));
                 loginStage.show();
-                
+
                 currentStage.close();
-                
+
             } catch (Exception e) {
-                mainView.showAlert("Lỗi", "Không thể đăng xuất: " + e.getMessage(), 
-                                 IMainView.AlertType.ERROR);
+                mainView.showAlert("Lỗi", "Không thể đăng xuất: " + e.getMessage(),
+                        IMainView.AlertType.ERROR);
             }
         }
     }
@@ -371,26 +400,33 @@ public class MainController implements Initializable {
      * Upload file - delegate to UploadManager
      */
     private void upload() {
+        if (currentFolderId < 0) {
+            mainView.showAlert("Lỗi", "Vui lòng chọn thư mục để tải file lên!", IMainView.AlertType.WARNING);
+            return;
+        }
+
         FileChooser fileChooser = new FileChooser();
         fileChooser.setTitle("Chọn file để tải lên");
         fileChooser.getExtensionFilters().addAll(
-            new FileChooser.ExtensionFilter("Tất cả file", "*.*"),
-            new FileChooser.ExtensionFilter("Tài liệu", "*.doc", "*.docx", "*.pdf", "*.txt", "*.rtf"),
-            new FileChooser.ExtensionFilter("Hình ảnh", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.tiff"),
-            new FileChooser.ExtensionFilter("Video", "*.mp4", "*.avi", "*.mkv", "*.mov", "*.wmv"),
-            new FileChooser.ExtensionFilter("Audio", "*.mp3", "*.wav", "*.flac", "*.aac"),
-            new FileChooser.ExtensionFilter("Archive", "*.zip", "*.rar", "*.7z", "*.tar", "*.gz")
+                new FileChooser.ExtensionFilter("Tất cả file", "*.*"),
+                new FileChooser.ExtensionFilter("Tài liệu", "*.doc", "*.docx", "*.pdf", "*.txt", "*.rtf"),
+                new FileChooser.ExtensionFilter("Hình ảnh", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.tiff"),
+                new FileChooser.ExtensionFilter("Video", "*.mp4", "*.avi", "*.mkv", "*.mov", "*.wmv"),
+                new FileChooser.ExtensionFilter("Audio", "*.mp3", "*.wav", "*.flac", "*.aac"),
+                new FileChooser.ExtensionFilter("Archive", "*.zip", "*.rar", "*.7z", "*.tar", "*.gz")
         );
 
         File selectedFile = fileChooser.showOpenDialog(btnUpload.getScene().getWindow());
         if (selectedFile != null) {
-            uploadManager.uploadFile(selectedFile, currentDirectory, (file, newFileItem, success, message) -> {
+            // Pass currentDirectory for compatibility, but UploadManager will extract folderId from it
+            // In future, can create overload that accepts folderId directly
+            uploadManager.uploadFile(selectedFile, String.valueOf(currentFolderId), (file, newFileItem, success, message) -> {
                 if (success) {
                     if (newFileItem != null) {
                         fileItems.add(newFileItem);
                         mainView.updateFileList(fileItems);
                     } else {
-                        loadFileList(); // Refresh from server
+                        loadDirectoryFiles(currentFolderId); // Refresh from server
                     }
                     mainView.setStatusMessage(message);
                 } else {
@@ -405,11 +441,11 @@ public class MainController implements Initializable {
      */
     private void createFolder() {
         String folderName = mainView.showInputDialog(
-            "Tạo thư mục mới", 
-            "Nhập tên thư mục:", 
-            "Thư mục mới"
+                "Tạo thư mục mới",
+                "Nhập tên thư mục:",
+                "Thư mục mới"
         );
-        
+
         if (folderName != null && !folderName.trim().isEmpty()) {
             // TODO: Implement folder creation via NetworkService
             mainView.setStatusMessage("Chức năng tạo thư mục sẽ được implement");
@@ -420,16 +456,16 @@ public class MainController implements Initializable {
      * Open permissions window
      */
     private void openPermissions() {
-        openFXMLWindow("/com/pbl4/syncproject/user-permission.fxml", 
-                      "Quản lý quyền người dùng", 600, 500);
+        openFXMLWindow("/com/pbl4/syncproject/user-permission.fxml",
+                "Quản lý quyền người dùng", 600, 500);
     }
 
     /**
      * Open settings window
      */
     private void openSettings() {
-        openFXMLWindow("/com/pbl4/syncproject/settings.fxml", 
-                      "Cài đặt hệ thống", 600, 500);
+        openFXMLWindow("/com/pbl4/syncproject/settings.fxml",
+                "Cài đặt hệ thống", 600, 500);
     }
 
     /**
@@ -441,7 +477,7 @@ public class MainController implements Initializable {
             mainView.showAlert("Thông báo", "Vui lòng nhập từ khóa tìm kiếm", IMainView.AlertType.INFORMATION);
             return;
         }
-        
+
         mainView.setStatusMessage("Đang tìm kiếm: " + searchText);
         // Search logic is handled by the view automatically through text change listener
     }
@@ -467,10 +503,10 @@ public class MainController implements Initializable {
      */
     private void deleteFile(FileItem fileItem) {
         boolean confirmed = mainView.showConfirmDialog(
-            "Xác nhận xóa", 
-            "Bạn có chắc chắn muốn xóa file: " + fileItem.getFileName() + "?"
+                "Xác nhận xóa",
+                "Bạn có chắc chắn muốn xóa file: " + fileItem.getFileName() + "?"
         );
-        
+
         if (confirmed) {
             // TODO: Implement delete logic via NetworkService
             mainView.setStatusMessage("Chức năng delete sẽ được implement");
@@ -493,8 +529,8 @@ public class MainController implements Initializable {
             stage.initModality(Modality.APPLICATION_MODAL);
             stage.showAndWait();
         } catch (Exception e) {
-            mainView.showAlert("Lỗi", "Không thể mở cửa sổ: " + e.getMessage(), 
-                             IMainView.AlertType.ERROR);
+            mainView.showAlert("Lỗi", "Không thể mở cửa sổ: " + e.getMessage(),
+                    IMainView.AlertType.ERROR);
         }
     }
 

@@ -37,8 +37,8 @@ public class FolderTreeHandler implements RequestHandler {
                     obj.addProperty("folderId", root.getFolderId());
                     obj.addProperty("parentFolderId", root.getParentId());
                     obj.addProperty("folderName", root.getFolderName());
-                    obj.addProperty("createdAt", root.getCreatedAt().toString());
-                    obj.addProperty("lastModified", root.getUpdatedAt().toString());
+                    obj.addProperty("createdAt", root.getCreatedAt() != null ? root.getCreatedAt().toString() : "");
+                    obj.addProperty("lastModified", root.getUpdatedAt() != null ? root.getUpdatedAt().toString() : "");
                     array.add(obj);
                     res.setStatus("success");
                     res.setMessage("Root folder retrieved");
@@ -64,8 +64,8 @@ public class FolderTreeHandler implements RequestHandler {
                     obj.addProperty("folderId", child.getFolderId());
                     obj.addProperty("parentFolderId", child.getParentId());
                     obj.addProperty("folderName", child.getFolderName());
-                    obj.addProperty("createdAt", child.getCreatedAt().toString());
-                    obj.addProperty("lastModified", child.getUpdatedAt().toString());
+                    obj.addProperty("createdAt", child.getCreatedAt() != null ? child.getCreatedAt().toString() : "");
+                    obj.addProperty("lastModified", child.getUpdatedAt() != null ? child.getUpdatedAt().toString() : "");
                     array.add(obj);
                 }
                 res.setStatus("success");
