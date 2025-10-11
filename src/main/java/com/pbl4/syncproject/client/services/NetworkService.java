@@ -17,7 +17,7 @@ import java.util.Base64;
 public class NetworkService {
     private static final String SERVER_IP = "20.89.65.146";
     private static final int SERVER_PORT = 8080;
-    private static final int TIMEOUT_MS = 30000; // 30 seconds
+    private static final int TIMEOUT_MS = 60000; // Tăng lên 60 seconds cho cloud server
     private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
     
     /**
@@ -74,7 +74,7 @@ public class NetworkService {
      * Upload file lên server với default folder (root)
      */
     public Response uploadFile(File file) throws Exception {
-        return uploadFile(file, 0); // 1 = root folder (not 0)
+        return uploadFile(file, 1); // 1 = root folder (not 0)
     }
     
     /**
@@ -127,19 +127,34 @@ public class NetworkService {
     }
     
     /**
-     * Test connection tới server
+     * Test connection tới server bằng LOGIN action (server chỉ hỗ trợ LOGIN và FOLDER_TREE)
      */
     public boolean testConnection() {
         try {
-            JsonObject data = new JsonObject();
-            data.addProperty("test", "ping");
-            data.addProperty("timestamp", System.currentTimeMillis());
+            System.out.println("DEBUG: Testing connection to " + SERVER_IP + ":" + SERVER_PORT);
             
-            Request request = new Request("PING", data);
+            // Sử dụng LOGIN action vì server chỉ hỗ trợ LOGIN và FOLDER_TREE
+            JsonObject data = new JsonObject();
+            data.addProperty("username", "test"); // Test credentials
+            data.addProperty("password", "test");
+            
+            Request request = new Request("LOGIN", data);
             Response response = sendRequest(request);
             
-            return response != null && "success".equals(response.getStatus());
+            // Coi như success nếu có response (kể cả error response từ server)
+            boolean success = response != null && ("success".equals(response.getStatus()) || "error".equals(response.getStatus()));
+            System.out.println("DEBUG: Connection test result: " + success);
+            if (response != null) {
+                System.out.println("DEBUG: Server response status: " + response.getStatus());
+                if (response.getMessage() != null) {
+                    System.out.println("DEBUG: Server response message: " + response.getMessage());
+                }
+            }
+            
+            return success;
         } catch (Exception e) {
+            System.err.println("DEBUG: Connection test failed: " + e.getMessage());
+            e.printStackTrace();
             return false;
         }
     }
@@ -153,10 +168,12 @@ public class NetworkService {
         BufferedReader reader = null;
         
         try {
-            // Create connection with timeout
+            // Create connection with longer timeout for cloud server
+            System.out.println("DEBUG: Connecting to " + SERVER_IP + ":" + SERVER_PORT);
             socket = new Socket();
-            socket.connect(new java.net.InetSocketAddress(SERVER_IP, SERVER_PORT), 10000); // 10s connect timeout
+            socket.connect(new java.net.InetSocketAddress(SERVER_IP, SERVER_PORT), 20000); // 20s connect timeout for cloud
             socket.setSoTimeout(TIMEOUT_MS);
+            System.out.println("DEBUG: Socket connected successfully");
             
             writer = new PrintWriter(socket.getOutputStream(), true);
             reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -167,6 +184,7 @@ public class NetworkService {
                 throw new Exception("Lỗi tạo request JSON");
             }
             
+            System.out.println("DEBUG: Sending request: " + requestJson.substring(0, Math.min(100, requestJson.length())));
             writer.println(requestJson);
             writer.flush();
             
@@ -176,6 +194,7 @@ public class NetworkService {
             }
             
             // Đọc response với timeout
+            System.out.println("DEBUG: Waiting for server response...");
             String responseStr = reader.readLine();
             if (responseStr == null) {
                 throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
@@ -184,6 +203,8 @@ public class NetworkService {
             if (responseStr.trim().isEmpty()) {
                 throw new Exception("Server trả về phản hồi rỗng");
             }
+            
+            System.out.println("DEBUG: Received response: " + responseStr.substring(0, Math.min(100, responseStr.length())));
             
             // Parse response
             Response response = JsonUtils.fromJson(responseStr, Response.class);
