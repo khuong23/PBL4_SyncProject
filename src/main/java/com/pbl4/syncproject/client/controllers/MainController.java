@@ -486,14 +486,28 @@ public class MainController implements Initializable {
     /**
      * Refresh data
      */
+// File: src/main/java/com/pbl4/syncproject/client/controllers/MainController.java
+
+    @FXML
     private void refresh() {
-        // THAY ĐỔI: Chỉ refresh cây thư mục và tải lại thư mục hiện tại
-        mainView.refreshFolderTree();
+        // SỬA ĐỔI: Thay vì gọi mainView, controller sẽ tự xử lý việc làm mới
+        // bằng cách gọi lại logic tải cây thư mục gốc.
+        if (treeDirectory.getRoot() != null) {
+            // Gọi lại hàm loadAndPopulateChildren cho thư mục gốc (root)
+            // để xây dựng lại cây từ đầu một cách chính xác.
+            loadAndPopulateChildren(treeDirectory.getRoot());
+        }
+
+        // Tải lại danh sách tệp cho thư mục đang được chọn (nếu có)
         if (currentFolderId > 0) {
             loadDirectoryFiles(currentFolderId);
         } else {
             mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
+            // Xóa danh sách tệp cũ nếu không có thư mục nào được chọn
+            mainView.updateFileList(FXCollections.observableArrayList());
         }
+
+        // Cập nhật các trạng thái khác
         updateSyncAgentStatus();
     }
 
