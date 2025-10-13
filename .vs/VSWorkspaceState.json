@@ -1,0 +1,19 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\src",
+    "\\src\\main",
+    "\\src\\main\\java",
+    "\\src\\main\\java\\com",
+    "\\src\\main\\java\\com\\pbl4",
+    "\\src\\main\\java\\com\\pbl4\\syncproject",
+    "\\src\\main\\java\\com\\pbl4\\syncproject\\client",
+    "\\src\\main\\java\\com\\pbl4\\syncproject\\client\\controllers",
+    "\\src\\main\\resources",
+    "\\src\\main\\resources\\com",
+    "\\src\\main\\resources\\com\\pbl4",
+    "\\src\\main\\resources\\com\\pbl4\\syncproject"
+  ],
+  "SelectedNode": "\\src\\main\\resources\\com\\pbl4\\syncproject\\main-refactored.fxml",
+  "PreviewInSolutionExplorer": false
+}

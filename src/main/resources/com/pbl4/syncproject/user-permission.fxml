@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import java.lang.*?>
+<?import javafx.collections.*?>
+<?import javafx.geometry.*?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.effect.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.text.*?>
+
+<VBox xmlns="http://javafx.com/javafx/21" xmlns:fx="http://javafx.com/fxml/1" 
+      fx:controller="com.pbl4.syncproject.client.controllers.UserPermissionController"
+      spacing="15" style="-fx-padding: 20; -fx-background-color: white;">
+    
+    <!-- Header -->
+    <Label text="Quản lý quyền người dùng" textFill="#1f2937">
+        <font>
+            <Font name="Segoe UI Bold" size="18" />
+        </font>
+    </Label>
+    
+    <!-- User Selection -->
+    <VBox spacing="8">
+        <Label text="Chọn người dùng:" textFill="#374151">
+            <font>
+                <Font name="Segoe UI Semibold" size="14" />
+            </font>
+        </Label>
+        <ComboBox fx:id="cmbUsers" prefWidth="300" style="-fx-background-radius: 8;" />
+    </VBox>
+    
+    <!-- File/Folder Selection -->
+    <VBox spacing="8">
+        <Label text="File/Thư mục:" textFill="#374151">
+            <font>
+                <Font name="Segoe UI Semibold" size="14" />
+            </font>
+        </Label>
+        <TextField fx:id="txtFilePath" promptText="Chọn file hoặc thư mục..." prefWidth="300" 
+                   style="-fx-background-radius: 8;" editable="false"/>
+        <Button fx:id="btnBrowse" text="📁 Chọn..." onAction="#handleBrowse"
+                style="-fx-background-color: #6b7280; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 6 12;"/>
+    </VBox>
+    
+    <!-- Permissions -->
+    <VBox spacing="12">
+        <Label text="Cấp quyền:" textFill="#374151">
+            <font>
+                <Font name="Segoe UI Semibold" size="14" />
+            </font>
+        </Label>
+        
+        <VBox spacing="8" style="-fx-background-color: #f9fafb; -fx-background-radius: 8; -fx-padding: 15;">
+            <CheckBox fx:id="chkRead" text="Đọc (Read)" selected="true">
+                <font>
+                    <Font name="Segoe UI" size="12" />
+                </font>
+            </CheckBox>
+            <CheckBox fx:id="chkWrite" text="Ghi (Write)">
+                <font>
+                    <Font name="Segoe UI" size="12" />
+                </font>
+            </CheckBox>
+            <CheckBox fx:id="chkEdit" text="Sửa đổi (Edit)">
+                <font>
+                    <Font name="Segoe UI" size="12" />
+                </font>
+            </CheckBox>
+            <CheckBox fx:id="chkDelete" text="Xóa (Delete)">
+                <font>
+                    <Font name="Segoe UI" size="12" />
+                </font>
+            </CheckBox>
+            <CheckBox fx:id="chkExecute" text="Thực thi (Execute)">
+                <font>
+                    <Font name="Segoe UI" size="12" />
+                </font>
+            </CheckBox>
+        </VBox>
+    </VBox>
+    
+    <!-- Current Permissions Display -->
+    <VBox spacing="8">
+        <Label text="Quyền hiện tại:" textFill="#374151">
+            <font>
+                <Font name="Segoe UI Semibold" size="14" />
+            </font>
+        </Label>
+        <TextArea fx:id="txtCurrentPermissions" prefRowCount="4" editable="false"
+                  style="-fx-background-radius: 8; -fx-background-color: #f3f4f6;"
+                  text="Chưa có thông tin quyền"/>
+    </VBox>
+    
+    <!-- Action Buttons -->
+    <HBox spacing="10" alignment="CENTER_RIGHT">
+        <Button fx:id="btnApply" text="Áp dụng" onAction="#handleApply"
+                style="-fx-background-color: #059669; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+        <Button fx:id="btnReset" text="Đặt lại" onAction="#handleReset"
+                style="-fx-background-color: #dc2626; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+        <Button fx:id="btnClose" text="Đóng" onAction="#handleClose"
+                style="-fx-background-color: #6b7280; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+    </HBox>
+    
+    <!-- Status -->
+    <Label fx:id="lblStatus" text="" textFill="#059669" visible="false">
+        <font>
+            <Font name="Segoe UI" size="12" />
+        </font>
+    </Label>
+</VBox>

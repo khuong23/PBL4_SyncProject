@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import java.lang.*?>
+<?import javafx.collections.*?>
+<?import javafx.geometry.*?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.effect.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.text.*?>
+
+<VBox xmlns="http://javafx.com/javafx/21" xmlns:fx="http://javafx.com/fxml/1" 
+      fx:controller="com.pbl4.syncproject.client.controllers.SettingsController"
+      prefWidth="600" prefHeight="500" style="-fx-background-color: white;">
+
+<TabPane VBox.vgrow="ALWAYS">
+    
+    <!-- Network Settings Tab -->
+    <Tab text="🌐 Mạng" closable="false">
+        <VBox spacing="15" style="-fx-padding: 20;">
+            
+            <!-- Server Configuration -->
+            <VBox spacing="10">
+                <Label text="Cấu hình máy chủ" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="16" />
+                    </font>
+                </Label>
+                
+                <GridPane hgap="15" vgap="10">
+                    <columnConstraints>
+                        <ColumnConstraints halignment="RIGHT" minWidth="120" />
+                        <ColumnConstraints hgrow="ALWAYS" minWidth="200" />
+                        <ColumnConstraints minWidth="100" />
+                    </columnConstraints>
+                    
+                    <Label text="Địa chỉ IP:" GridPane.rowIndex="0" GridPane.columnIndex="0" />
+                    <TextField fx:id="txtServerIP" GridPane.rowIndex="0" GridPane.columnIndex="1"
+                               text="127.0.0.1" style="-fx-background-radius: 6;"/>
+                    <Button text="Kiểm tra" GridPane.rowIndex="0" GridPane.columnIndex="2"
+                            style="-fx-background-color: #3b82f6; -fx-text-fill: white; -fx-background-radius: 6;"/>
+                    
+                    <Label text="Cổng:" GridPane.rowIndex="1" GridPane.columnIndex="0" />
+                    <TextField fx:id="txtServerPort" GridPane.rowIndex="1" GridPane.columnIndex="1"
+                               text="5000" style="-fx-background-radius: 6;"/>
+                    
+                    <Label text="Timeout (ms):" GridPane.rowIndex="2" GridPane.columnIndex="0" />
+                    <Spinner fx:id="spnTimeout" GridPane.rowIndex="2" GridPane.columnIndex="1"
+                             min="1000" max="60000" initialValue="30000" style="-fx-background-radius: 6;"/>
+                </GridPane>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Connection Settings -->
+            <VBox spacing="10">
+                <Label text="Cài đặt kết nối" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkAutoReconnect" text="Tự động kết nối lại khi mất kết nối" selected="true"/>
+                <CheckBox fx:id="chkKeepAlive" text="Duy trì kết nối (Keep Alive)" selected="true"/>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Số lần thử lại:"/>
+                    <Spinner fx:id="spnRetryCount" min="1" max="10" initialValue="3" prefWidth="80"/>
+                </HBox>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Khoảng thời gian thử lại (giây):"/>
+                    <Spinner fx:id="spnRetryInterval" min="5" max="300" initialValue="30" prefWidth="80"/>
+                </HBox>
+            </VBox>
+        </VBox>
+    </Tab>
+    
+    <!-- Sync Settings Tab -->
+    <Tab text="🔄 Đồng bộ" closable="false">
+        <VBox spacing="15" style="-fx-padding: 20;">
+            
+            <!-- Auto Sync -->
+            <VBox spacing="10">
+                <Label text="Đồng bộ tự động" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="16" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkAutoSync" text="Bật đồng bộ tự động" selected="true"/>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Tần suất kiểm tra (phút):"/>
+                    <Spinner fx:id="spnSyncInterval" min="1" max="60" initialValue="5" prefWidth="80"/>
+                </HBox>
+                
+                <CheckBox fx:id="chkSyncOnStart" text="Đồng bộ khi khởi động ứng dụng" selected="true"/>
+                <CheckBox fx:id="chkSyncSubfolders" text="Đồng bộ các thư mục con" selected="true"/>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- File Types -->
+            <VBox spacing="10">
+                <Label text="Loại file đồng bộ" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkSyncDocuments" text="Tài liệu (.doc, .docx, .pdf, .txt)" selected="true"/>
+                <CheckBox fx:id="chkSyncImages" text="Hình ảnh (.png, .jpg, .jpeg, .gif)" selected="true"/>
+                <CheckBox fx:id="chkSyncVideos" text="Video (.mp4, .avi, .mkv)" selected="false"/>
+                <CheckBox fx:id="chkSyncArchives" text="File nén (.zip, .rar, .7z)" selected="true"/>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Kích thước file tối đa (MB):"/>
+                    <Spinner fx:id="spnMaxFileSize" min="1" max="1000" initialValue="100" prefWidth="80"/>
+                </HBox>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Conflict Resolution -->
+            <VBox spacing="10">
+                <Label text="Xử lý xung đột" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <RadioButton fx:id="rbNewerWins" text="File mới hơn thắng" selected="true">
+                    <toggleGroup>
+                        <ToggleGroup fx:id="conflictResolution" />
+                    </toggleGroup>
+                </RadioButton>
+                <RadioButton fx:id="rbLargerWins" text="File lớn hơn thắng" toggleGroup="$conflictResolution"/>
+                <RadioButton fx:id="rbAskUser" text="Hỏi người dùng" toggleGroup="$conflictResolution"/>
+                <RadioButton fx:id="rbKeepBoth" text="Giữ cả hai file" toggleGroup="$conflictResolution"/>
+            </VBox>
+        </VBox>
+    </Tab>
+    
+    <!-- Security Tab -->
+    <Tab text="🔒 Bảo mật" closable="false">
+        <VBox spacing="15" style="-fx-padding: 20;">
+            
+            <!-- Encryption -->
+            <VBox spacing="10">
+                <Label text="Mã hóa" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="16" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkEncryptTransfer" text="Mã hóa dữ liệu khi truyền" selected="true"/>
+                <CheckBox fx:id="chkEncryptStorage" text="Mã hóa file khi lưu trữ" selected="false"/>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Thuật toán mã hóa:"/>
+                    <ComboBox fx:id="cmbEncryption" />
+                </HBox>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Authentication -->
+            <VBox spacing="10">
+                <Label text="Xác thực" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkRememberPassword" text="Nhớ mật khẩu" selected="false"/>
+                <CheckBox fx:id="chkAutoLogin" text="Tự động đăng nhập" selected="false"/>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Thời gian hết phiên (phút):"/>
+                    <Spinner fx:id="spnSessionTimeout" min="5" max="480" initialValue="60" prefWidth="80"/>
+                </HBox>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Access Control -->
+            <VBox spacing="10">
+                <Label text="Kiểm soát truy cập" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkLogAccess" text="Ghi log truy cập file" selected="true"/>
+                <CheckBox fx:id="chkLogChanges" text="Ghi log thay đổi file" selected="true"/>
+                <CheckBox fx:id="chkNotifyChanges" text="Thông báo khi có thay đổi" selected="true"/>
+            </VBox>
+        </VBox>
+    </Tab>
+    
+    <!-- General Tab -->
+    <Tab text="⚙️ Chung" closable="false">
+        <VBox spacing="15" style="-fx-padding: 20;">
+            
+            <!-- Language -->
+            <VBox spacing="10">
+                <Label text="Ngôn ngữ và giao diện" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="16" />
+                    </font>
+                </Label>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Ngôn ngữ:"/>
+                    <ComboBox fx:id="cmbLanguage" />
+                </HBox>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Chủ đề:"/>
+                    <ComboBox fx:id="cmbTheme" />
+                </HBox>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Notifications -->
+            <VBox spacing="10">
+                <Label text="Thông báo" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <CheckBox fx:id="chkShowNotifications" text="Hiển thị thông báo hệ thống" selected="true"/>
+                <CheckBox fx:id="chkSoundNotifications" text="Âm thanh thông báo" selected="false"/>
+                <CheckBox fx:id="chkMinimizeToTray" text="Thu nhỏ xuống khay hệ thống" selected="true"/>
+                <CheckBox fx:id="chkStartWithWindows" text="Khởi động cùng Windows" selected="false"/>
+            </VBox>
+            
+            <Separator />
+            
+            <!-- Storage -->
+            <VBox spacing="10">
+                <Label text="Lưu trữ" textFill="#1f2937">
+                    <font>
+                        <Font name="Segoe UI Bold" size="14" />
+                    </font>
+                </Label>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Thư mục đồng bộ:"/>
+                    <TextField fx:id="txtSyncFolder" text="C:\\SyncData" prefWidth="200" style="-fx-background-radius: 6;"/>
+                    <Button text="Chọn..." onAction="#handleChooseSyncFolder"
+                            style="-fx-background-color: #6b7280; -fx-text-fill: white; -fx-background-radius: 6;"/>
+                </HBox>
+                
+                <HBox spacing="10" alignment="CENTER_LEFT">
+                    <Label text="Thư mục tạm:"/>
+                    <TextField fx:id="txtTempFolder" text="C:\\Temp\\SyncApp" prefWidth="200" style="-fx-background-radius: 6;"/>
+                    <Button text="Chọn..." onAction="#handleChooseTempFolder"
+                            style="-fx-background-color: #6b7280; -fx-text-fill: white; -fx-background-radius: 6;"/>
+                </HBox>
+                
+                <CheckBox fx:id="chkCleanTempOnExit" text="Xóa file tạm khi thoát" selected="true"/>
+            </VBox>
+        </VBox>
+    </Tab>
+</TabPane>
+
+<!-- Action Buttons at Bottom -->
+<HBox spacing="10" alignment="CENTER_RIGHT" style="-fx-padding: 15; -fx-background-color: #f9fafb;">
+    <Button fx:id="btnResetToDefault" text="Mặc định" onAction="#handleResetToDefault"
+            style="-fx-background-color: #6b7280; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+    <Button fx:id="btnCancel" text="Hủy" onAction="#handleCancel"
+            style="-fx-background-color: #dc2626; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+    <Button fx:id="btnApply" text="Áp dụng" onAction="#handleApply"
+            style="-fx-background-color: #059669; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+    <Button fx:id="btnOK" text="OK" onAction="#handleOK" defaultButton="true"
+            style="-fx-background-color: #2563eb; -fx-text-fill: white; -fx-background-radius: 6; -fx-padding: 8 16;"/>
+</HBox>
+
+</VBox>
