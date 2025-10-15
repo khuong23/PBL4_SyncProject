@@ -6,54 +6,53 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
-public class FolderDAO {
-    private final Connection dbConnection;
+public final class FolderDAO {
 
-    public FolderDAO(Connection dbConnection) {
-        this.dbConnection = dbConnection;
-    }
+    private static final String COLS =
+            "FolderID, FolderName, ParentFolderID, CreatedAt, LastModified";
 
-    // Lấy tất cả folder con của folder parentId
-    public List<Folders> getChildren(int parentId) throws SQLException {
-        String sql = "SELECT * FROM Folders WHERE ParentFolderID = ?";
-        List<Folders> list = new ArrayList<>();
+    private static final String SQL_CHILDREN =
+            "SELECT " + COLS + " FROM Folders WHERE ParentFolderID = ? ORDER BY FolderName ASC";
 
-        try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
-            stm.setInt(1, parentId);
-            try (ResultSet rs = stm.executeQuery()) {
-                while (rs.next()) {
-                    Timestamp tsLastModified = rs.getTimestamp("LastModified");
-                    list.add(new Folders(
-                            rs.getInt("FolderID"),
-                            rs.getString("FolderName"),
-                            (Integer) rs.getObject("ParentFolderID"),
-                            rs.getTimestamp("CreatedAt").toLocalDateTime(),
-                            tsLastModified != null ? tsLastModified.toLocalDateTime() : null
-                    ));
-                }
+    private static final String SQL_ROOT_ONE =
+            "SELECT " + COLS + "FROM Folders WHERE FolderID = 1 LIMIT 1";
+
+    private FolderDAO() {}
+
+    /** Lấy tất cả folder con của parentId (dùng pool, thread-safe). */
+    public static List<Folders> getChildren(int parentId) throws SQLException {
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_CHILDREN)) {
+            ps.setInt(1, parentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Folders> out = new ArrayList<>();
+                while (rs.next()) out.add(map(rs));
+                return out;
             }
         }
-        return list;
     }
 
-    // Lấy folder root (ParentFolderID IS NULL)
-    public Folders getRootFolder() throws SQLException {
-        String sql = "SELECT * FROM Folders WHERE ParentFolderID IS NULL";
-
-        try (PreparedStatement stm = dbConnection.prepareStatement(sql);
-             ResultSet rs = stm.executeQuery()) {
-
-            if (rs.next()) {
-                Timestamp tsLastModified = rs.getTimestamp("LastModified");
-                return new Folders(
-                        rs.getInt("FolderID"),
-                        rs.getString("FolderName"),
-                        (Integer) rs.getObject("ParentFolderID"),
-                        rs.getTimestamp("CreatedAt").toLocalDateTime(),
-                        tsLastModified != null ? tsLastModified.toLocalDateTime() : null
-                );
-            }
+    /** Lấy root folder (FolderID == 1). Trả về 1 folder, hoặc null nếu chưa có. */
+    public static Folders getRootFolder() throws SQLException {
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_ROOT_ONE);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? map(rs) : null;
         }
-        return null;
+    }
+
+    // ---- Mapper ----
+    private static Folders map(ResultSet rs) throws SQLException {
+        Timestamp created = rs.getTimestamp("CreatedAt");     // thường NOT NULL
+        Timestamp last    = rs.getTimestamp("LastModified");  // có thể NULL
+        Integer parentId  = (Integer) rs.getObject("ParentFolderID"); // giữ được NULL
+
+        return new Folders(
+                rs.getInt("FolderID"),
+                rs.getString("FolderName"),
+                parentId,
+                created != null ? created.toLocalDateTime() : null,
+                last != null ? last.toLocalDateTime() : null
+        );
     }
 }

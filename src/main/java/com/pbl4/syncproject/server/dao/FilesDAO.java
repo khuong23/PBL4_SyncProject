@@ -2,40 +2,42 @@ package com.pbl4.syncproject.server.dao;
 
 import com.pbl4.syncproject.common.model.Files;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.List;
+import java.sql.*;
 import java.util.ArrayList;
+import java.util.List;
 
-public class FilesDAO {
-    private final Connection dbConnection;
+public final class FilesDAO {
 
-    public FilesDAO(Connection dbConnection) {
-        this.dbConnection = dbConnection;
-    }
+    private static final String COLS =
+            "FileID, FolderID, FileName, FileSize, FileHash, CreatedAt, LastModified";
 
-    public List<Files> getFilesInFolder(int folderId) throws SQLException {
-        String sql = "SELECT * FROM Files WHERE FolderID = ?";
-        try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
-            stm.setInt(1, folderId);
-            try (ResultSet rs = stm.executeQuery()) {
-                List<Files> list = new ArrayList<>();
+    private static final String SQL_GET_IN_FOLDER =
+            "SELECT " + COLS + " FROM Files WHERE FolderID = ? ORDER BY FileName ASC";
+
+    private FilesDAO() {}
+
+    public static List<Files> getFilesInFolder(int folderId) throws SQLException {
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_GET_IN_FOLDER)) {
+
+            ps.setInt(1, folderId);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Files> out = new ArrayList<>();
                 while (rs.next()) {
-                    // Lấy LastModified cẩn thận, có thể null
-                    java.sql.Timestamp tsLastModified = rs.getTimestamp("LastModified");
-                    list.add(new Files(
+                    Timestamp created = rs.getTimestamp("CreatedAt");     // NOT NULL theo schema
+                    Timestamp last    = rs.getTimestamp("LastModified");  // có thể NULL
+                    out.add(new Files(
                             rs.getInt("FileID"),
                             rs.getInt("FolderID"),
                             rs.getString("FileName"),
                             rs.getLong("FileSize"),
                             rs.getString("FileHash"),
-                            rs.getTimestamp("CreatedAt").toLocalDateTime(),
-                            tsLastModified != null ? tsLastModified.toLocalDateTime() : null
+                            created != null ? created.toLocalDateTime() : null,
+                            last != null ? last.toLocalDateTime() : null
                     ));
                 }
-                return list;
+                return out;
             }
         }
     }

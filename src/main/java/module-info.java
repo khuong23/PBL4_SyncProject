@@ -11,6 +11,7 @@ module com.pbl4.syncproject {
     requires eu.hansolo.tilesfx;
     requires java.sql;
     requires com.google.gson;
+    requires com.zaxxer.hikari;
 
     exports com.pbl4.syncproject.client to javafx.graphics;
     opens com.pbl4.syncproject.client to javafx.fxml;

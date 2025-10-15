@@ -5,250 +5,125 @@ import com.google.gson.JsonObject;
 import com.pbl4.syncproject.common.dispatcher.RequestHandler;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
+import com.pbl4.syncproject.common.model.Folders;
+import com.pbl4.syncproject.common.model.Files;
+import com.pbl4.syncproject.server.dao.FolderDAO;
+import com.pbl4.syncproject.server.dao.FilesDAO;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.text.SimpleDateFormat;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
- * Handler để lấy danh sách files và folders từ database
+ * Handler lấy danh sách files/folders từ DB.
+ * Quy ước: Root folder có ID = 1.
  */
 public class FileListHandler implements RequestHandler {
-    private final Connection dbConnection;
-    private final SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy HH:mm");
 
-    public FileListHandler(Connection dbConnection) {
-        this.dbConnection = dbConnection;
-    }
+    // Thread-safe formatter
+    private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
     @Override
     public Response handle(Request request) {
-        Response response = new Response();
-
+        Response res = new Response();
         try {
             JsonObject data = request.getData();
-            // Mặc định là 0, nhưng client đã được sửa để luôn gửi ID hợp lệ
-            int folderId = data != null && data.has("folderId") ? data.get("folderId").getAsInt() : 0;
+            int folderId = (data != null && data.has("folderId")) ? data.get("folderId").getAsInt() : 1;
+            if (folderId == 0) folderId = 1; // ép về root
 
-            // Nếu client gửi 0, điều đó có nghĩa là không có thư mục nào được chọn, trả về danh sách rỗng.
-            if (folderId == 0) {
-                response.setStatus("success");
-                response.setMessage("No folder selected");
-                JsonObject emptyData = new JsonObject();
-                emptyData.add("folders", new JsonArray());
-                emptyData.add("files", new JsonArray());
-                response.setData(emptyData);
-                return response;
-            }
+            // Lấy dữ liệu từ DAO (DAO dùng Hikari pool bên trong)
+            List<Folders> childFolders = FolderDAO.getChildren(folderId);
+            List<Files> filesInFolder  = FilesDAO.getFilesInFolder(folderId);
 
-            JsonObject responseData = new JsonObject();
+            JsonObject payload = new JsonObject();
+            payload.add("folders", toJsonFolders(childFolders));
+            payload.add("files",   toJsonFiles(filesInFolder));
 
-            // Lấy danh sách các thư mục con
-            JsonArray folders = getFolders(folderId);
-            responseData.add("folders", folders);
-
-            // Lấy danh sách các tệp
-            JsonArray files = getFiles(folderId);
-            responseData.add("files", files);
-
-            response.setStatus("success");
-            response.setMessage("Lấy danh sách thành công");
-            response.setData(responseData);
+            res.setStatus("success");
+            res.setMessage("Lấy danh sách thành công");
+            res.setData(payload);
+            return res;
 
         } catch (Exception e) {
             e.printStackTrace();
-            response.setStatus("error");
-            response.setMessage("Lỗi khi lấy danh sách: " + e.getMessage());
+            res.setStatus("error");
+            res.setMessage("Lỗi khi lấy danh sách: " + e.getMessage());
+            return res;
         }
-
-        return response;
     }
 
-    /**
-     * Lấy danh sách folders con của folder hiện tại
-     */
-    private JsonArray getFolders(int parentFolderId) throws Exception {
-        JsonArray folders = new JsonArray();
+    // ===== Helpers =====
 
-        String sql = "SELECT FolderID, FolderName, LastModified, CreatedAt FROM Folders WHERE ParentFolderID ";
-        if (parentFolderId == 0) {
-            sql += "IS NULL"; // Root folders
-        } else {
-            sql += "= ?";
+    private JsonArray toJsonFolders(List<Folders> list) {
+        JsonArray arr = new JsonArray();
+        for (Folders f : list) {
+            JsonObject o = new JsonObject();
+            o.addProperty("id",   f.getFolderId());
+            o.addProperty("name", f.getFolderName());
+            o.addProperty("type", "folder");
+
+            var lm = (f.getUpdatedAt() != null) ? f.getUpdatedAt() : f.getCreatedAt();
+            o.addProperty("lastModified", lm != null ? DTF.format(lm) : "");
+
+            o.addProperty("size", "");
+            o.addProperty("permission", "Đọc/Ghi");
+            o.addProperty("syncStatus", "✅ Đã đồng bộ");
+            arr.add(o);
         }
-        sql += " ORDER BY FolderName";
-
-        System.out.println("SERVER DEBUG: Getting folders with query: " + sql + " (parentFolderId: " + parentFolderId + ")");
-
-        try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
-            if (parentFolderId != 0) {
-                stmt.setInt(1, parentFolderId);
-            }
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                int folderCount = 0;
-                while (rs.next()) {
-                    folderCount++;
-                    JsonObject folder = new JsonObject();
-                    folder.addProperty("id", rs.getInt("FolderID"));
-                    folder.addProperty("name", rs.getString("FolderName"));
-                    folder.addProperty("type", "folder");
-
-                    // Format date
-                    java.sql.Timestamp lastModified = rs.getTimestamp("LastModified");
-                    if (lastModified != null) {
-                        folder.addProperty("lastModified", dateFormat.format(lastModified));
-                    } else {
-                        java.sql.Timestamp createdAt = rs.getTimestamp("CreatedAt");
-                        folder.addProperty("lastModified", dateFormat.format(createdAt));
-                    }
-
-                    folder.addProperty("size", "");
-                    folder.addProperty("permission", "Đọc/Ghi");
-                    folder.addProperty("syncStatus", "✅ Đã đồng bộ");
-
-                    folders.add(folder);
-                    System.out.println("SERVER DEBUG: Added folder: " + rs.getString("FolderName") + " (ID: " + rs.getInt("FolderID") + ")");
-                }
-                System.out.println("SERVER DEBUG: Total folders found: " + folderCount);
-            }
-        }
-
-        return folders;
+        return arr;
     }
 
-    /**
-     * Lấy danh sách files trong folder hiện tại
-     */
-    private JsonArray getFiles(int folderId) throws Exception {
-        JsonArray files = new JsonArray();
+    private JsonArray toJsonFiles(List<Files> list) {
+        JsonArray arr = new JsonArray();
+        for (Files f : list) {
+            JsonObject o = new JsonObject();
+            o.addProperty("id",   f.getFileId());
+            o.addProperty("name", f.getFileName());
+            o.addProperty("type", "file");
 
-        String sql;
+            // Nếu cần tên folder, tạo thêm DAO JOIN lấy FolderName rồi set vào đây
+            o.addProperty("folderName", "");
 
-        if (folderId == 0) {
-            // Root request - return ALL files with folder information
-            sql = "SELECT f.FileID, f.FileName, f.FileSize, f.LastModified, f.CreatedAt, " +
-                    "fd.FolderName as FolderName " +
-                    "FROM Files f " +
-                    "INNER JOIN Folders fd ON f.FolderID = fd.FolderID " +
-                    "ORDER BY fd.FolderName, f.FileName";
-            System.out.println("SERVER DEBUG: Getting ALL files with query: " + sql);
-        } else {
-            // Specific folder request
-            sql = "SELECT f.FileID, f.FileName, f.FileSize, f.LastModified, f.CreatedAt, " +
-                    "fd.FolderName as FolderName " +
-                    "FROM Files f " +
-                    "INNER JOIN Folders fd ON f.FolderID = fd.FolderID " +
-                    "WHERE f.FolderID = ? ORDER BY f.FileName";
-            System.out.println("SERVER DEBUG: Getting files for folder " + folderId + " with query: " + sql);
+            o.addProperty("size", formatFileSize(f.getSize()));
+            o.addProperty("fileType", getFileType(f.getFileName()));
+
+            var lm = (f.getUpdatedAt() != null) ? f.getUpdatedAt() : f.getCreatedAt();
+            o.addProperty("lastModified", lm != null ? DTF.format(lm) : "");
+
+            o.addProperty("permission", "Đọc/Ghi");
+            o.addProperty("syncStatus", "✅ Đã đồng bộ");
+            arr.add(o);
         }
-
-        try (PreparedStatement stmt = dbConnection.prepareStatement(sql)) {
-            if (folderId != 0) {
-                stmt.setInt(1, folderId);
-            }
-
-            try (ResultSet rs = stmt.executeQuery()) {
-                int fileCount = 0;
-                while (rs.next()) {
-                    fileCount++;
-                    JsonObject file = new JsonObject();
-                    file.addProperty("id", rs.getInt("FileID"));
-                    file.addProperty("name", rs.getString("FileName"));
-                    file.addProperty("type", "file");
-
-                    // Add folder name for client-side filtering
-                    file.addProperty("folderName", rs.getString("FolderName"));
-
-                    // Format file size
-                    long fileSize = rs.getLong("FileSize");
-                    file.addProperty("size", formatFileSize(fileSize));
-
-                    // Get file type from extension
-                    String fileName = rs.getString("FileName");
-                    file.addProperty("fileType", getFileType(fileName));
-
-                    // Format date
-                    java.sql.Timestamp lastModified = rs.getTimestamp("LastModified");
-                    if (lastModified != null) {
-                        file.addProperty("lastModified", dateFormat.format(lastModified));
-                    } else {
-                        java.sql.Timestamp createdAt = rs.getTimestamp("CreatedAt");
-                        file.addProperty("lastModified", dateFormat.format(createdAt));
-                    }
-
-                    file.addProperty("permission", "Đọc/Ghi");
-                    file.addProperty("syncStatus", "✅ Đã đồng bộ");
-
-                    files.add(file);
-                    System.out.println("SERVER DEBUG: Added file: " + fileName + " (FolderName: " + rs.getString("FolderName") + ")");
-                }
-                System.out.println("SERVER DEBUG: Total files found: " + fileCount);
-            }
-        }
-
-        return files;
+        return arr;
     }
 
-    /**
-     * Format file size in human readable format
-     */
     private String formatFileSize(long bytes) {
-        if (bytes == 0) return "0 B";
+        if (bytes <= 0) return "0 B";
         if (bytes < 1024) return bytes + " B";
         int exp = (int) (Math.log(bytes) / Math.log(1024));
         String pre = "KMGTPE".charAt(exp - 1) + "";
         return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
     }
 
-    /**
-     * Get file type from extension
-     */
     private String getFileType(String fileName) {
-        if (fileName == null || !fileName.contains(".")) {
-            return "File";
-        }
+        if (fileName == null) return "File";
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 0) return "File";
+        String ext = fileName.substring(dot).toLowerCase();
 
-        String extension = fileName.substring(fileName.lastIndexOf(".")).toLowerCase();
-
-        switch (extension) {
-            case ".doc":
-            case ".docx":
-            case ".pdf":
-            case ".txt":
-            case ".rtf":
+        switch (ext) {
+            case ".doc": case ".docx": case ".pdf": case ".txt": case ".rtf":
                 return "Document";
-            case ".xls":
-            case ".xlsx":
-            case ".csv":
+            case ".xls": case ".xlsx": case ".csv":
                 return "Spreadsheet";
-            case ".ppt":
-            case ".pptx":
+            case ".ppt": case ".pptx":
                 return "Presentation";
-            case ".jpg":
-            case ".jpeg":
-            case ".png":
-            case ".gif":
-            case ".bmp":
-            case ".tiff":
+            case ".jpg": case ".jpeg": case ".png": case ".gif": case ".bmp": case ".tiff":
                 return "Image";
-            case ".mp4":
-            case ".avi":
-            case ".mkv":
-            case ".mov":
-            case ".wmv":
+            case ".mp4": case ".avi": case ".mkv": case ".mov": case ".wmv":
                 return "Video";
-            case ".mp3":
-            case ".wav":
-            case ".flac":
-            case ".aac":
+            case ".mp3": case ".wav": case ".flac": case ".aac":
                 return "Audio";
-            case ".zip":
-            case ".rar":
-            case ".7z":
-            case ".tar":
-            case ".gz":
+            case ".zip": case ".rar": case ".7z": case ".tar": case ".gz":
                 return "Archive";
             default:
                 return "File";

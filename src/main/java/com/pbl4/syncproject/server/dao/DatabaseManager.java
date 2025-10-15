@@ -1,69 +1,87 @@
 package com.pbl4.syncproject.server.dao;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.util.List;
-import java.util.ArrayList;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
-public class DatabaseManager {
-    private static final String URL =
-            "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb"
-                    + "?sslMode=REQUIRED&serverTimezone=UTC&connectTimeout=5000&socketTimeout=15000";
-    private static final String USER = "sync_user";      // Flexible: không có @
-    private static final String PASSWORD = "Syncpass123";
+import java.sql.*;
 
+public final class DatabaseManager {
+    private static final HikariDataSource DS;
 
-    private static Connection connection;
+    static {
+        // Có thể override qua biến môi trường, còn không dùng default bên dưới
+        String url  = getenv("DB_URL",
+                "jdbc:mysql://syncserver.mysql.database.azure.com:3306/syncdb"
+                        + "?sslMode=REQUIRED&enabledTLSProtocols=TLSv1.2,TLSv1.3"
+                        + "&serverTimezone=UTC&connectTimeout=5000&socketTimeout=15000&tcpKeepAlive=true");
+        String user = getenv("DB_USER", "sync_user");
+        String pass = getenv("DB_PASSWORD", "Syncpass123");
 
-    // Mở kết nối
+        HikariConfig cfg = new HikariConfig();
+        cfg.setJdbcUrl(url);
+        cfg.setUsername(user);
+        cfg.setPassword(pass);
+        cfg.setMaximumPoolSize(10);       // đủ cho đa luồng vừa phải
+        cfg.setMinimumIdle(2);
+        cfg.setConnectionTimeout(7000);
+        cfg.setIdleTimeout(60000);
+        cfg.setMaxLifetime(30 * 60_000);  // 30 phút
+        cfg.setConnectionTestQuery("SELECT 1");
+
+        DS = new HikariDataSource(cfg);
+
+        // Đóng pool khi JVM shutdown
+        Runtime.getRuntime().addShutdownHook(new Thread(DatabaseManager::closePool));
+    }
+
+    private DatabaseManager() {}
+
+    /** Lấy connection từ pool (dùng try-with-resources). */
     public static Connection getConnection() throws SQLException {
-        if (connection == null || connection.isClosed()) {
-            connection = DriverManager.getConnection(URL, USER, PASSWORD);
-            System.out.println("✅ Database connected");
-        }
-        return connection;
+        return DS.getConnection();
     }
 
-    // Đóng kết nối (nếu cần)
-    public static void closeConnection() {
-        try {
-            if (connection != null && !connection.isClosed()) {
-                connection.close();
-                System.out.println("🔌 Database connection closed");
+    /** Transaction gọn: tự commit/rollback. */
+    public static <T> T inTransaction(SQLFunction<Connection, T> work) throws SQLException {
+        try (Connection c = getConnection()) {
+            boolean old = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try {
+                T res = work.apply(c);
+                c.commit();
+                return res;
+            } catch (Exception e) {
+                try { c.rollback(); } catch (SQLException ignore) {}
+                if (e instanceof SQLException se) throw se;
+                throw new SQLException(e);
+            } finally {
+                try { c.setAutoCommit(old); } catch (SQLException ignore) {}
             }
+        }
+    }
+
+    /** Ping DB để health-check. */
+    public static boolean ping() {
+        try (Connection c = getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT 1")) {
+            return rs.next();
         } catch (SQLException e) {
-            System.err.println("❌ Error closing DB: " + e.getMessage());
+            return false;
         }
     }
 
-    public List<String> getSubFolders(int parentFolderId) throws SQLException {
-        List<String> folders = new ArrayList<>();
-        String sql = "SELECT FolderName FROM Folders WHERE ParentFolderID = ?";
-        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            stmt.setInt(1, parentFolderId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    folders.add(rs.getString("FolderName"));
-                }
-            }
-        }
-        return folders;
+    /** Đóng pool (thường không cần gọi thủ công). */
+    public static void closePool() {
+        if (DS != null && !DS.isClosed()) DS.close();
     }
 
-    public List<String> getFilesInFolder(int folderId) throws SQLException {
-        List<String> files = new ArrayList<>();
-        String sql = "SELECT FileName FROM Files WHERE FolderID = ?";
-        try (PreparedStatement stmt = getConnection().prepareStatement(sql)) {
-            stmt.setInt(1, folderId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                while (rs.next()) {
-                    files.add(rs.getString("FileName"));
-                }
-            }
-        }
-        return files;
+    // --- helpers ---
+    private static String getenv(String k, String def) {
+        String v = System.getenv(k);
+        return (v == null || v.isBlank()) ? def : v;
     }
+
+    @FunctionalInterface
+    public interface SQLFunction<I, O> { O apply(I input) throws Exception; }
 }
