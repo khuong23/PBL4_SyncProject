@@ -287,13 +287,15 @@ public class MainController implements Initializable {
 
     // ========= Business actions =========
 
-    private void handleLogout() { logout(); }
-    private void handleRefresh() { refresh(); }
-    private void handleUpload() { upload(); }
-    private void handleCreateFolder() { createFolder(); }
-    private void handlePermissions() { openPermissions(); }
-    private void handleSettings() { openSettings(); }
-    private void handleSearch() { search(); }
+    // === EVENT HANDLERS ===
+
+    @FXML private void handleLogout() { logout(); }
+    @FXML private void handleRefresh() { refresh(); }
+    @FXML private void handleUpload() { upload(); }
+    @FXML private void handleCreateFolder() { createFolder(); }
+    @FXML private void handlePermissions() { openPermissions(); }
+    @FXML private void handleSettings() { openSettings(); }
+    @FXML private void handleSearch() { search(); }
 
     private void logout() {
         boolean confirmed = mainView.showConfirmDialog(

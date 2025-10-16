@@ -61,9 +61,9 @@ public final class StorageManager {
 
     /** Chặn path thoát khỏi root */
     public void assertWithinRoot(Path p) throws IOException {
-        Path root = getRoot().toRealPath();
-        Path real = p.toAbsolutePath().normalize().toRealPath(LinkOption.NOFOLLOW_LINKS);
-        if (!real.startsWith(root)) {
+        Path root = getRoot().toRealPath();              // root chắc chắn tồn tại
+        Path normalized = p.toAbsolutePath().normalize();// KHÔNG toRealPath() trên p
+        if (!normalized.startsWith(root)) {
             throw new SecurityException("Path outside of storage root: " + p);
         }
     }
@@ -128,7 +128,7 @@ public final class StorageManager {
         }
 
         Path full = base.resolve(rel).normalize();
-        assertWithinRoot(base);
+        assertWithinRoot(full);
         return full;
     }
 
