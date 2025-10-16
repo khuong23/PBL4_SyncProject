@@ -17,6 +17,7 @@ public class Dispatcher {
         handlers.put("GET_FILE_LIST",  new FileListHandler());
         handlers.put("UPLOAD_FILE",    new UploadFileHandler());
         handlers.put("CREATE_FOLDER",  new CreateFolderHandler());
+        handlers.put("DOWNLOAD_FILE",  new DownloadFileHandler());
 
         // PING: kiểm tra kết nối đơn giản
         handlers.put("PING", req -> {
