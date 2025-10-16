@@ -70,12 +70,7 @@ public class UploadManager {
                     // Update progress to 30%
                     updateProgress(30, 100);
                     updateMessage("Đang kết nối server...");
-                    
-                    // Test connection first
-                    if (!networkService.testConnection()) {
-                        throw new Exception("Không thể kết nối tới server");
-                    }
-                    
+
                     // Update progress to 50%
                     updateProgress(50, 100);
                     updateMessage("Đang tải lên file...");

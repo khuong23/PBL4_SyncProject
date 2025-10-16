@@ -6,79 +6,127 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Base64;
 
 /**
- * Service class để xử lý network communication với server
- * Tách biệt network logic khỏi UI controller
+ * NetworkService (simple persistent):
+ * - Giữ 1 socket xuyên suốt vòng đời client.
+ * - Giao thức: JSON kết thúc bằng '\n' (tương thích server).
+ * - Khi gặp IOException: đóng, kết nối lại và thử gửi lại 1 lần.
+ * - Thread-safe theo mức cơ bản (synchronized khi ghi/đọc).
  */
 public class NetworkService {
-    private static final int TIMEOUT_MS = 60000; // Tăng lên 60 seconds cho cloud server
-    private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
+    private static final int CONNECT_TIMEOUT_MS = 10_000;
+    private static final int READ_TIMEOUT_MS    = 15_000;
 
-    private String serverIP;
-    private int serverPort;
+    private final String serverIP;
+    private final int serverPort;
 
-    /**
-     * Constructor - PHẢI set server address sau khi tạo object
-     */
-    public NetworkService() {
-        // Không set default IP/port - phải được set từ login
-        this.serverIP = null;
-        this.serverPort = 0;
-    }
+    private Socket socket;
+    private BufferedReader reader;
+    private BufferedWriter writer;
 
-    /**
-     * Constructor với custom server IP và port (recommended)
-     */
+    // Khóa để gửi/nhận theo thứ tự, dùng an toàn từ nhiều luồng
+    private final Object ioLock = new Object();
+
     public NetworkService(String serverIP, int serverPort) {
         this.serverIP = serverIP;
         this.serverPort = serverPort;
     }
 
-    /**
-     * Set server IP và port (BẮT BUỘC gọi trước khi sử dụng các method khác)
-     */
-    public void setServerAddress(String serverIP, int serverPort) {
-        this.serverIP = serverIP;
-        this.serverPort = serverPort;
-        System.out.println("📍 NetworkService configured: " + serverIP + ":" + serverPort);
+    /** Gọi sớm khi app khởi động (vd: sau khi chọn IP/Port) */
+    public void start() throws IOException {
+        ensureConnected();
     }
 
-    /**
-     * Kiểm tra xem server address đã được set chưa
-     */
-    private void validateServerAddress() throws Exception {
-        if (serverIP == null || serverIP.trim().isEmpty() || serverPort <= 0) {
-            throw new Exception("Server address chưa được thiết lập! Vui lòng gọi setServerAddress() trước.");
+    /** Đóng kết nối khi thoát ứng dụng */
+    public void stop() {
+        closeQuiet();
+    }
+
+    public String getServerInfo() {
+        return serverIP + ":" + serverPort;
+    }
+
+    /** API dùng như cũ: gửi Request và nhận Response trên cùng 1 socket */
+    public Response sendRequest(Request request) throws Exception {
+        Exception last = null;
+
+        // Thử 2 lần tối đa: lần đầu → nếu IOException thì reconnect và thử lại 1 lần
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                ensureConnected();
+                String payload = JsonUtils.toJson(request);
+                if (payload == null || payload.isBlank()) {
+                    throw new IllegalArgumentException("Request JSON rỗng");
+                }
+
+                String respLine;
+                synchronized (ioLock) {
+                    writer.write(payload);
+                    writer.write('\n');      // newline-terminated
+                    writer.flush();
+
+                    socket.setSoTimeout(READ_TIMEOUT_MS);
+                    respLine = reader.readLine();
+                }
+
+                if (respLine == null) throw new EOFException("Server đóng kết nối");
+                Response resp = JsonUtils.fromJson(respLine, Response.class);
+                if (resp == null) throw new IOException("Phản hồi không hợp lệ từ server");
+                return resp;
+
+            } catch (IOException io) {
+                last = io;
+                reconnect(); // đóng và kết nối lại, rồi vòng lặp sẽ thử lần 2
+            }
         }
+        throw (last != null ? last : new IOException("sendRequest failed"));
     }
 
-    /**
-     * Get current server IP
-     */
-    public String getServerIP() {
-        return this.serverIP;
+    // ================== Nội bộ ==================
+
+    private void ensureConnected() throws IOException {
+        if (socket != null && socket.isConnected() && !socket.isClosed()) return;
+        connect();
     }
 
-    /**
-     * Get current server port
-     */
-    public int getServerPort() {
-        return this.serverPort;
+    private void connect() throws IOException {
+        closeQuiet();
+
+        Socket s = new Socket();
+        s.connect(new InetSocketAddress(serverIP, serverPort), CONNECT_TIMEOUT_MS);
+        s.setSoTimeout(READ_TIMEOUT_MS);
+        s.setTcpNoDelay(true);
+        s.setKeepAlive(true);
+
+        this.socket = s;
+        this.reader = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+        this.writer = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
     }
 
-    /**
-     * Upload file lên server
-     */
+    private void reconnect() {
+        try { connect(); } catch (IOException ignore) { /* sẽ ném lỗi ở lần gửi sau */ }
+    }
+
+    private void closeQuiet() {
+        try { if (reader != null) reader.close(); } catch (IOException ignored) {}
+        try { if (writer != null) writer.close(); } catch (IOException ignored) {}
+        try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+        reader = null; writer = null; socket = null;
+    }
+    public Response uploadFile(File file) throws Exception {
+        return uploadFile(file, 1); // 1 = root folder (not 0)
+    }
     public Response uploadFile(File file, int folderId) throws Exception {
-        validateServerAddress(); // Kiểm tra server address trước khi sử dụng
 
         // Validate file size
-        if (file.length() > MAX_FILE_SIZE) {
-            throw new Exception("File quá lớn. Kích thước tối đa: " + formatFileSize(MAX_FILE_SIZE));
+        if (file.length() > 50*1024*1024) {
+            throw new Exception("File quá lớn. Kích thước tối đa: 50MB" );
         }
 
         // Validate file exists and is readable
@@ -120,215 +168,5 @@ public class NetworkService {
         } catch (Exception e) {
             throw e;
         }
-    }
-
-    /**
-     * Upload file lên server với default folder (root)
-     */
-    public Response uploadFile(File file) throws Exception {
-        return uploadFile(file, 1); // 1 = root folder (not 0)
-    }
-
-    /**
-     * Lấy danh sách files và folders từ server
-     */
-    public Response getFileList(int folderId) throws Exception {
-        validateServerAddress();
-
-        JsonObject data = new JsonObject();
-        data.addProperty("folderId", folderId);
-
-        Request request = new Request("GET_FILE_LIST", data);
-        return sendRequest(request);
-    }
-
-    /**
-     * Lấy danh sách files từ root folder
-     */
-    public Response getFileList() throws Exception {
-        return getFileList(1); // 1 = root folder (not 0)
-    }
-
-    /**
-     * Tạo folder trên server
-     */
-    public Response createFolder(String folderName, int parentFolderId) throws Exception {
-        validateServerAddress();
-
-        JsonObject data = new JsonObject();
-        data.addProperty("folderName", folderName);
-        data.addProperty("parentFolderId", parentFolderId);
-
-        Request request = new Request("CREATE_FOLDER", data);
-        return sendRequest(request);
-    }
-
-    /**
-     * Tạo folder với parent mặc định (root)
-     */
-    public Response createFolder(String folderName) throws Exception {
-        return createFolder(folderName, 1); // 1 = root folder (not 0)
-    }
-
-    /**
-     * Lấy folder tree từ server (children of root folder)
-     * ParentId = 1 để lấy các folder con của root (shared, documents, images, videos)
-     */
-    public Response getFolderTree() throws Exception {
-        validateServerAddress();
-
-        JsonObject data = new JsonObject();
-        data.addProperty("parentId", 1); // Changed from 0 to 1 to get children of root folder
-        Request request = new Request("FOLDER_TREE", data);
-        return sendRequest(request);
-    }
-
-    /**
-     * Download file từ server
-     */
-    public Response downloadFile(String fileName, int folderId) throws Exception {
-        validateServerAddress();
-
-        JsonObject data = new JsonObject();
-        data.addProperty("fileName", fileName);
-        data.addProperty("folderId", folderId);
-
-        Request request = new Request("DOWNLOAD", data);
-        return sendRequest(request);
-    }
-
-    /**
-     * Test connection tới server bằng LOGIN action (server chỉ hỗ trợ LOGIN và FOLDER_TREE)
-     */
-    public boolean testConnection() {
-        try {
-            validateServerAddress();
-
-            System.out.println("DEBUG: Testing connection to " + serverIP + ":" + serverPort);
-
-            // Sử dụng LOGIN action vì server chỉ hỗ trợ LOGIN và FOLDER_TREE
-            JsonObject data = new JsonObject();
-            data.addProperty("username", "test"); // Test credentials
-            data.addProperty("password", "test");
-
-            Request request = new Request("LOGIN", data);
-            Response response = sendRequest(request);
-
-            // Coi như success nếu có response (kể cả error response từ server)
-            boolean success = response != null && ("success".equals(response.getStatus()) || "error".equals(response.getStatus()));
-            System.out.println("DEBUG: Connection test result: " + success);
-            if (response != null) {
-                System.out.println("DEBUG: Server response status: " + response.getStatus());
-                if (response.getMessage() != null) {
-                    System.out.println("DEBUG: Server response message: " + response.getMessage());
-                }
-            }
-
-            return success;
-        } catch (Exception e) {
-            System.err.println("DEBUG: Connection test failed: " + e.getMessage());
-            e.printStackTrace();
-            return false;
-        }
-    }
-
-    /**
-     * Gửi request lên server và nhận response
-     */
-    private Response sendRequest(Request request) throws Exception {
-        validateServerAddress(); // Double check
-
-        Socket socket = null;
-        PrintWriter writer = null;
-        BufferedReader reader = null;
-
-        try {
-            // Create connection with longer timeout for cloud server
-            System.out.println("DEBUG: Connecting to " + serverIP + ":" + serverPort);
-            socket = new Socket();
-            socket.connect(new java.net.InetSocketAddress(serverIP, serverPort), 20000); // 20s connect timeout for cloud
-            socket.setSoTimeout(TIMEOUT_MS);
-            System.out.println("DEBUG: Socket connected successfully");
-
-            writer = new PrintWriter(socket.getOutputStream(), true);
-            reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-            // Gửi request
-            String requestJson = JsonUtils.toJson(request);
-            if (requestJson == null || requestJson.trim().isEmpty()) {
-                throw new Exception("Lỗi tạo request JSON");
-            }
-
-            System.out.println("DEBUG: Sending request: " + requestJson.substring(0, Math.min(100, requestJson.length())));
-            writer.println(requestJson);
-            writer.flush();
-
-            // Check for write errors
-            if (writer.checkError()) {
-                throw new Exception("Lỗi gửi dữ liệu lên server");
-            }
-
-            // Đọc response với timeout
-            System.out.println("DEBUG: Waiting for server response...");
-            String responseStr = reader.readLine();
-            if (responseStr == null) {
-                throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
-            }
-
-            if (responseStr.trim().isEmpty()) {
-                throw new Exception("Server trả về phản hồi rỗng");
-            }
-
-            System.out.println("DEBUG: Received response: " + responseStr.substring(0, Math.min(100, responseStr.length())));
-
-            // Parse response
-            Response response = JsonUtils.fromJson(responseStr, Response.class);
-            if (response == null) {
-                throw new Exception("Không thể phân tích phản hồi từ server");
-            }
-
-            return response;
-
-        } catch (java.net.ConnectException e) {
-            throw new Exception("Không thể kết nối tới server " + serverIP + ":" + serverPort +
-                    ". Server có thể đang tắt hoặc địa chỉ không đúng.");
-        } catch (java.net.SocketTimeoutException e) {
-            throw new Exception("Kết nối tới server bị timeout. Vui lòng thử lại sau.");
-        } catch (java.net.UnknownHostException e) {
-            throw new Exception("Không thể tìm thấy server tại địa chỉ: " + serverIP);
-        } catch (IOException e) {
-            throw new Exception("Lỗi kết nối mạng: " + e.getMessage());
-        } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().startsWith("Không thể")) {
-                throw e; // Re-throw our custom messages
-            }
-            throw new Exception("Lỗi không xác định: " + e.getMessage(), e);
-        } finally {
-            // Clean up resources
-            try {
-                if (writer != null) writer.close();
-                if (reader != null) reader.close();
-                if (socket != null && !socket.isClosed()) socket.close();
-            } catch (IOException e) {
-                // Ignore cleanup errors
-            }
-        }
-    }
-
-    /**
-     * Get current server info
-     */
-    public String getServerInfo() {
-        return serverIP + ":" + serverPort;
-    }
-
-    /**
-     * Format file size in human readable format
-     */
-    private String formatFileSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        int exp = (int) (Math.log(bytes) / Math.log(1024));
-        String pre = "KMGTPE".charAt(exp - 1) + "";
-        return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
     }
 }

@@ -1,47 +1,63 @@
 package com.pbl4.syncproject.client.controllers;
 
 import com.google.gson.JsonObject;
-import com.pbl4.syncproject.common.jsonhandler.JsonUtils;
+import com.pbl4.syncproject.client.services.NetworkService;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
-
+import javafx.concurrent.Task;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.concurrent.Task;
 import javafx.stage.Stage;
-import java.io.*;
+
 import java.net.*;
+
 import java.util.Enumeration;
 
 public class LoginController {
+
     @FXML private TextField txtUsername;
     @FXML private PasswordField txtPassword;
     @FXML private Label lblStatus;
     @FXML private ComboBox<String> cmbIp;
     @FXML private ComboBox<String> cmbPort;
     @FXML private Button btnClear;
+    @FXML private Button btnLogin;
 
-    public void initialize(){
-        cmbPort.getItems().addAll("8080","21", "22", "80", "443");
-        cmbPort.getSelectionModel().select(0);
-        cmbIp.getItems().add("20.89.65.146");
-        cmbIp.getItems().add("127.0.0.1");
-        cmbIp.getSelectionModel().select(0);
-        loadIpAddress();
+    // Gói kết quả đăng nhập
+    private static final class LoginResult {
+        final boolean success;
+        final NetworkService ns;
+        LoginResult(boolean success, NetworkService ns) {
+            this.success = success;
+            this.ns = ns;
+        }
     }
-    private void loadIpAddress(){
+
+    public void initialize() {
+        cmbPort.getItems().setAll("8080", "21", "22", "80", "443");
+        cmbPort.getSelectionModel().select("8080");
+        cmbIp.getItems().addAll("20.89.65.146", "127.0.0.1");
+        cmbIp.getSelectionModel().selectFirst();
+        loadIpAddress();
+        setStatus("", null);
+    }
+
+    private void loadIpAddress() {
         try {
             Enumeration<NetworkInterface> nics = NetworkInterface.getNetworkInterfaces();
             while (nics.hasMoreElements()) {
                 NetworkInterface nic = nics.nextElement();
-                Enumeration<InetAddress> inetAddresses = nic.getInetAddresses();
-                while (inetAddresses.hasMoreElements()) {
-                    InetAddress inetAddress = inetAddresses.nextElement();
-                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
-                        cmbIp.getItems().add(inetAddress.getHostAddress());
+                Enumeration<InetAddress> addrs = nic.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress ia = addrs.nextElement();
+                    if (!ia.isLoopbackAddress() && ia instanceof Inet4Address) {
+                        String ip = ia.getHostAddress();
+                        if (!cmbIp.getItems().contains(ip)) {
+                            cmbIp.getItems().add(ip);
+                        }
                     }
                 }
             }
@@ -52,101 +68,125 @@ public class LoginController {
 
     @FXML
     private void handleLogin() {
-        String username = txtUsername.getText();
-        String password = txtPassword.getText();
-        String ip = cmbIp.getSelectionModel().getSelectedItem();
+        final String username = txtUsername.getText() == null ? "" : txtUsername.getText().trim();
+        final String password = txtPassword.getText() == null ? "" : txtPassword.getText();
+        final String ip = cmbIp.getSelectionModel().getSelectedItem();
 
         if (ip == null || cmbPort.getSelectionModel().isEmpty()) {
-            lblStatus.setText("⚠️ Vui lòng chọn IP và Port!");
-            lblStatus.setStyle("-fx-text-fill: orange;");
-            return;
+            setStatus("⚠️ Vui lòng chọn IP và Port!", "orange"); return;
+        }
+        if (username.isEmpty() || password.isEmpty()) {
+            setStatus("⚠️ Nhập đầy đủ tài khoản & mật khẩu!", "orange"); return;
         }
 
-        int port = Integer.parseInt(cmbPort.getSelectionModel().getSelectedItem());
+        final int port;
+        try {
+            port = Integer.parseInt(cmbPort.getSelectionModel().getSelectedItem());
+        } catch (NumberFormatException ex) {
+            setStatus("⚠️ Port không hợp lệ!", "orange"); return;
+        }
 
-        // Task chạy mạng trong background thread
-        Task<Boolean> loginTask = new Task<>() {
+        setBusy(true);
+
+        Task<LoginResult> loginTask = new Task<LoginResult>() {
             @Override
-            protected Boolean call() throws Exception {
-                try (Socket socket = new Socket(ip, port);
-                     PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
-                     BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+            protected LoginResult call() throws Exception {
+                // Chuẩn bị request LOGIN
+                JsonObject data = new JsonObject();
+                data.addProperty("username", username);
+                data.addProperty("password", password);
+                Request req = new Request("LOGIN", data);
 
-                    // Tạo JSON request
-                    JsonObject data = new JsonObject();
-                    data.addProperty("username", username);
-                    data.addProperty("password", password);
+                // Mở kết nối persistent và gọi login
+                NetworkService ns = new NetworkService(ip, port);
+                ns.start();
+                Response res = ns.sendRequest(req);
 
-                    Request req = new Request("LOGIN", data);
-                    String jsonString = JsonUtils.toJson(req);
-                    writer.println(jsonString); // gửi lên server
-
-                    // Đọc response từ server
-                    String responseStr = reader.readLine();
-                    Response resObj = JsonUtils.fromJson(responseStr, Response.class);
-
-                    // Trả về true nếu login thành công
-                    return "success".equalsIgnoreCase(resObj.getStatus());
+                boolean ok = "success".equalsIgnoreCase(res.getStatus());
+                if (!ok) {
+                    ns.stop(); // đóng nếu login fail
                 }
+                return new LoginResult(ok, ns);
             }
         };
 
-        // Khi task thành công
-        loginTask.setOnSucceeded(event -> {
-            boolean success = loginTask.getValue();
-            if (success) {
-                lblStatus.setText("✅ Login thành công!");
-                lblStatus.setStyle("-fx-text-fill: green;");
-
-                // Mở giao diện chính
-                try {
-                    FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main-refactored.fxml"));
-                    Parent root = loader.load();
-
-                    // Get MainController và set server address
-                    MainController mainController = loader.getController();
-                    if (mainController != null) {
-                        mainController.setServerAddress(ip, port);
-                    }
-
-                    Stage mainStage = new Stage();
-                    mainStage.setTitle("Hệ thống đồng bộ dữ liệu - " + username);
-                    mainStage.setScene(new Scene(root, 1200, 800));
-                    mainStage.setMaximized(true);
-                    mainStage.show();
-
-                    // Đóng login window
-                    Stage loginStage = (Stage) txtUsername.getScene().getWindow();
-                    loginStage.close();
-                } catch (Exception e) {
-                    lblStatus.setText("❌ Lỗi mở giao diện chính!");
-                    lblStatus.setStyle("-fx-text-fill: red;");
-                    e.printStackTrace();
-                }
+        loginTask.setOnSucceeded(ev -> {
+            setBusy(false);
+            LoginResult r = loginTask.getValue();
+            if (r != null && r.success) {
+                setStatus("✅ Login thành công!", "green");
+                openMainAndCloseLogin(username, ip, port, r.ns);
             } else {
-                lblStatus.setText("❌ Sai tài khoản hoặc mật khẩu!");
-                lblStatus.setStyle("-fx-text-fill: red;");
+                setStatus("❌ Sai tài khoản hoặc mật khẩu!", "red");
             }
         });
 
-        // Khi task thất bại
-        loginTask.setOnFailed(event -> {
-            lblStatus.setText("❌ Không kết nối được server!");
-            lblStatus.setStyle("-fx-text-fill: red;");
-            loginTask.getException().printStackTrace();
+        loginTask.setOnFailed(ev -> {
+            setBusy(false);
+            setStatus("❌ Không kết nối được server!", "red");
+            Throwable ex = loginTask.getException();
+            if (ex != null) ex.printStackTrace();
         });
 
-        // Chạy task
-        new Thread(loginTask).start();
+        new Thread(loginTask, "login-task").start();
     }
-
 
     @FXML
     private void handleClear() {
         txtUsername.clear();
         txtPassword.clear();
-        lblStatus.setText("");
+        setStatus("", null);
         cmbIp.getSelectionModel().select("127.0.0.1");
-        cmbPort.getSelectionModel().select(0);
+        cmbPort.getSelectionModel().select("8080");
+    }
+
+    private void openMainAndCloseLogin(String username, String ip, int port, NetworkService ns) {
+        try {
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main-refactored.fxml"));
+            Parent root = loader.load();
+
+            MainController mainController = loader.getController();
+            if (mainController != null) {
+                mainController.setServerAddress(ip, port);
+                mainController.setNetworkService(ns); // truyền kết nối xuyên suốt
+                mainController.setUsername(username);
+                mainController.initAfterLogin();   // <-- gọi khởi tạo sau login
+            }
+
+            Stage mainStage = new Stage();
+            mainStage.setTitle("Hệ thống đồng bộ dữ liệu - " + username);
+            mainStage.setScene(new Scene(root, 1200, 800));
+            mainStage.setMaximized(true);
+            // đóng socket/cleanup khi tắt window chính
+            mainStage.setOnCloseRequest(e -> {
+                if (mainController != null) mainController.cleanup();
+            });
+            mainStage.show();
+
+            ((Stage) txtUsername.getScene().getWindow()).close();
+        } catch (Exception e) {
+            setStatus("❌ Lỗi mở giao diện chính!", "red");
+            e.printStackTrace();
+            if (ns != null) ns.stop(); // tránh rò nếu UI mở lỗi
+        }
+    }
+
+    private void setBusy(boolean busy) {
+        if (btnLogin != null) btnLogin.setDisable(busy);
+        if (btnClear != null) btnClear.setDisable(busy);
+        txtUsername.setDisable(busy);
+        txtPassword.setDisable(busy);
+        cmbIp.setDisable(busy);
+        cmbPort.setDisable(busy);
+        if (busy) setStatus("⏳ Đang đăng nhập...", "gray");
+    }
+
+    private void setStatus(String msg, String color) {
+        lblStatus.setText(msg == null ? "" : msg);
+        if (color != null) {
+            lblStatus.setStyle("-fx-text-fill: " + color + ";");
+        } else {
+            lblStatus.setStyle(null);
+        }
     }
 }

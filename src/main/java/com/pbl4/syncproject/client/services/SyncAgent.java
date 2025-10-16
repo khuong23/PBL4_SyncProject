@@ -16,6 +16,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     private final FileWatcherService fileWatcher;
     private final FileHashService hashService;
     private final NetworkService networkService;
+    private final UploadManager uploadManager;
     private final SyncQueue syncQueue;
     
     // Sync configuration
@@ -30,10 +31,11 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     // File hashes để track changes
     private final Map<String, String> lastKnownHashes = new ConcurrentHashMap<>();
     
-    public SyncAgent(NetworkService networkService) {
+    public SyncAgent(NetworkService networkService, UploadManager uploadManager) {
         this.networkService = networkService;
         this.fileWatcher = new FileWatcherService();
         this.hashService = new FileHashService();
+        this.uploadManager = uploadManager;
         this.syncQueue = new SyncQueue();
         
         // Register as listener
