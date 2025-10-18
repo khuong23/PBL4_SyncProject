@@ -9,7 +9,10 @@ import javafx.collections.ObservableList;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.HBox;
+import javafx.stage.FileChooser;
+import javafx.stage.Stage;
 
+import java.io.File;
 import java.util.List;
 import java.util.Optional;
 
@@ -417,6 +420,30 @@ public class MainView implements IMainView {
     }
 
     @Override
+    public int getSelectedFileId() {
+        FileItem selected = tableFiles.getSelectionModel().getSelectedItem();
+        if (selected != null) {
+            return selected.getFileId();
+        }
+        return -1; // Không có file nào được chọn
+    }
+
+    @Override
+    public String getSelectedFileNameOriginal() {
+        FileItem selected = tableFiles.getSelectionModel().getSelectedItem();
+        if (selected != null && selected.getFileName() != null) {
+            // Loại bỏ icon ở đầu tên file
+            String displayName = selected.getFileName();
+            int firstSpace = displayName.indexOf(" ");
+            if (firstSpace > 0 && firstSpace < 5) { // Giả sử icon chỉ có vài ký tự
+                return displayName.substring(firstSpace + 1).trim();
+            }
+            return displayName.trim(); // Trả về nếu không có dạng icon + tên
+        }
+        return null;
+    }
+
+    @Override
     public void updateDirectoryTree() {
         Platform.runLater(() -> {
             // Refresh directory tree if needed
@@ -685,5 +712,19 @@ public class MainView implements IMainView {
         } else {
             setSelectedItemsInfo(selectedCount + " mục được chọn");
         }
+    }
+
+    // Hàm helper để mở hộp thoại lưu file (có thể gọi từ Controller)
+    public File showSaveFileChooser(String initialFileName) {
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Lưu File Tải Về");
+        fileChooser.setInitialFileName(initialFileName); // Gợi ý tên file
+
+        // Có thể thêm ExtensionFilter nếu biết loại file
+        // fileChooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Text Files", "*.txt"));
+
+        // Lấy cửa sổ hiện tại để hiển thị dialog đúng vị trí
+        Stage stage = (Stage) tableFiles.getScene().getWindow();
+        return fileChooser.showSaveDialog(stage);
     }
 }

@@ -5,6 +5,7 @@ package com.pbl4.syncproject.client.models;
  * Tách biệt data model khỏi UI components
  */
 public class FileItem {
+    private int fileId; // ID thực của file từ database
     private String fileName;
     private String fileSize;
     private String fileType;
@@ -41,6 +42,14 @@ public class FileItem {
     }
 
     // Getters and setters
+    public int getFileId() {
+        return fileId;
+    }
+
+    public void setFileId(int fileId) {
+        this.fileId = fileId;
+    }
+
     public String getFileName() {
         return fileName;
     }

@@ -1,11 +1,14 @@
 package com.pbl4.syncproject.client.controllers;
 
+import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.client.services.*;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
+import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
@@ -18,7 +21,10 @@ import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.util.Base64;
 import java.util.List;
 import java.util.ResourceBundle;
 
@@ -410,7 +416,106 @@ public class MainController implements Initializable {
     }
 
     private void downloadFile(FileItem fileItem) {
-        mainView.setStatusMessage("Chức năng download sẽ được implement");
+        if (fileItem == null) {
+            mainView.showAlert("Lỗi", "Chưa chọn file để tải.", IMainView.AlertType.WARNING);
+            return;
+        }
+
+        // Lấy tên file gốc từ tên hiển thị (bỏ icon)
+        String originalFileName = getOriginalFileName(fileItem.getFileName());
+        int currentFolderIdForDownload = this.currentFolderId; // Lấy folderId hiện tại
+
+        if (originalFileName == null || currentFolderIdForDownload <= 0) {
+            mainView.showAlert("Lỗi", "Không thể xác định file cần tải (thiếu tên hoặc thư mục).", IMainView.AlertType.ERROR);
+            return;
+        }
+
+        mainView.setStatusMessage("Đang chuẩn bị tải file '" + originalFileName + "'...");
+        mainView.showDownloadProgress(originalFileName, 0.1); // Bắt đầu hiển thị progress
+
+        TaskWrapper.executeAsync(
+            "Đang tải file...",
+            () -> { // Background Task
+                try {
+                    // Gọi service để lấy nội dung base64
+                    return fileService.downloadFile(currentFolderIdForDownload, originalFileName);
+                } catch (Exception e) {
+                    throw new RuntimeException("Lỗi khi gửi yêu cầu tải: " + e.getMessage(), e);
+                }
+            },
+            (response) -> { // onSuccess - Chạy trên UI Thread
+                if ("success".equalsIgnoreCase(response.getStatus()) && response.getData() != null && response.getData().isJsonObject()) {
+                    JsonObject data = response.getData().getAsJsonObject();
+                    if (data.has("fileContent") && data.has("encoding") && "base64".equals(data.get("encoding").getAsString())) {
+                        String base64Content = data.get("fileContent").getAsString();
+                        String receivedFileName = data.has("fileName") ? data.get("fileName").getAsString() : "downloaded_file";
+
+                        Platform.runLater(() -> { // Đảm bảo chạy trên JavaFX thread cho FileChooser
+                            try {
+                                byte[] fileBytes = Base64.getDecoder().decode(base64Content);
+
+                                // Mở hộp thoại lưu file
+                                FileChooser fileChooser = new FileChooser();
+                                fileChooser.setTitle("Lưu File Tải Về");
+                                fileChooser.setInitialFileName(receivedFileName);
+                                Stage stage = (Stage) tableFiles.getScene().getWindow(); // Lấy stage hiện tại
+                                File saveFile = fileChooser.showSaveDialog(stage);
+
+                                if (saveFile != null) {
+                                    // Lưu file
+                                    Files.write(saveFile.toPath(), fileBytes);
+                                    mainView.hideDownloadProgress();
+                                    mainView.setStatusMessage("Đã tải và lưu file '" + receivedFileName + "' thành công.");
+                                    mainView.showAlert("Thành công", "Đã lưu file '" + saveFile.getName() + "' thành công.", IMainView.AlertType.INFORMATION);
+                                } else {
+                                    mainView.hideDownloadProgress();
+                                    mainView.setStatusMessage("Đã hủy lưu file.");
+                                }
+                            } catch (IllegalArgumentException e) {
+                                mainView.hideDownloadProgress();
+                                mainView.showAlert("Lỗi Dữ Liệu", "Dữ liệu file tải về không hợp lệ (lỗi giải mã Base64).", IMainView.AlertType.ERROR);
+                                mainView.setStatusMessage("Lỗi dữ liệu tải về.");
+                            } catch (IOException e) {
+                                mainView.hideDownloadProgress();
+                                mainView.showAlert("Lỗi Lưu File", "Không thể ghi file xuống đĩa: " + e.getMessage(), IMainView.AlertType.ERROR);
+                                mainView.setStatusMessage("Lỗi lưu file tải về.");
+                            } catch (Exception e) {
+                                mainView.hideDownloadProgress();
+                                mainView.showAlert("Lỗi Không Xác Định", "Đã xảy ra lỗi: " + e.getMessage(), IMainView.AlertType.ERROR);
+                                mainView.setStatusMessage("Lỗi không xác định khi xử lý file.");
+                            }
+                        });
+                    } else {
+                        mainView.hideDownloadProgress();
+                        String error = data.has("message") ? data.get("message").getAsString() : "Server trả về dữ liệu không hợp lệ (thiếu nội dung hoặc sai encoding).";
+                        mainView.showAlert("Lỗi Tải Xuống", error, IMainView.AlertType.ERROR);
+                        mainView.setStatusMessage("Tải file thất bại.");
+                    }
+                } else {
+                    mainView.hideDownloadProgress();
+                    String error = response.getMessage() != null ? response.getMessage() : "Không thể tải file.";
+                    mainView.showAlert("Lỗi Tải Xuống", error, IMainView.AlertType.ERROR);
+                    mainView.setStatusMessage("Tải file thất bại.");
+                }
+            },
+            (errorMsg) -> { // onError - Chạy trên UI Thread
+                mainView.hideDownloadProgress();
+                mainView.showAlert("Lỗi Tải Xuống", "Tải file thất bại: " + errorMsg, IMainView.AlertType.ERROR);
+                mainView.setStatusMessage("Tải file thất bại.");
+            },
+            mainView // Truyền mainView để TaskWrapper cập nhật UI
+        );
+    }
+
+    // Helper để lấy tên file gốc từ tên hiển thị (bỏ icon)
+    private String getOriginalFileName(String displayName) {
+        if (displayName == null) return null;
+        int firstSpace = displayName.indexOf(" ");
+        // Giả định icon nằm trước dấu cách đầu tiên và không quá dài
+        if (firstSpace > 0 && firstSpace < 5) {
+            return displayName.substring(firstSpace + 1).trim();
+        }
+        return displayName.trim(); // Trả về nếu không có dạng icon + tên
     }
 
     private void editFile(FileItem fileItem) {

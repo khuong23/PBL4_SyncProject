@@ -54,6 +54,10 @@ public interface IMainView {
     void hideUploadProgress();
     void showDownloadProgress(String fileName, double progress);
     void hideDownloadProgress();
+    
+    // File Selection Methods
+    int getSelectedFileId(); // Lấy ID của file đang chọn
+    String getSelectedFileNameOriginal(); // Lấy tên file gốc (không có icon)
 
     // UI State Methods
     void enableUI(boolean enabled);

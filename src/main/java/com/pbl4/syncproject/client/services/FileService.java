@@ -24,6 +24,7 @@ public class FileService {
     // ======= Điều chỉnh nếu server dùng action/key khác =======
     private static final String ACTION_LIST_FILES  = "GET_FILE_LIST";
     private static final String ACTION_FOLDER_TREE = "FOLDER_TREE";
+    private static final String ACTION_DOWNLOAD_FILE = "DOWNLOAD_FILE"; // Action mới
 
     private static final String KEY_FOLDER_ID     = "folderId";
     private static final String KEY_FILES         = "files";
@@ -80,6 +81,29 @@ public class FileService {
             throw new Exception("Cây thư mục rỗng hoặc không hợp lệ từ server.");
         }
         return folders;
+    }
+
+    /** Gửi yêu cầu tải file và trả về Response chứa nội dung base64 */
+    public Response downloadFile(int fileId) throws Exception {
+        if (fileId <= 0) {
+            throw new IllegalArgumentException("File ID không hợp lệ.");
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId); // Server hỗ trợ tìm theo fileId
+        Request request = new Request(ACTION_DOWNLOAD_FILE, data);
+        return networkService.sendRequest(request);
+    }
+
+    /** Gửi yêu cầu tải file bằng tên và folderId */
+    public Response downloadFile(int folderId, String fileName) throws Exception {
+        if (folderId <= 0 || fileName == null || fileName.isBlank()) {
+            throw new IllegalArgumentException("Folder ID hoặc File Name không hợp lệ.");
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("folderId", folderId);
+        data.addProperty("fileName", fileName); // Server hỗ trợ tìm theo cặp này
+        Request request = new Request(ACTION_DOWNLOAD_FILE, data);
+        return networkService.sendRequest(request);
     }
 
     // ==========================================================
@@ -202,6 +226,10 @@ public class FileService {
     public FileItem createFileItemFromJson(JsonObject json, boolean isFolder) {
         if (json == null || json.isJsonNull()) return null;
         try {
+            // Lấy fileId từ JSON (key có thể là "id" hoặc "fileId")
+            int fileId = getInt(json, KEY_ID, -1);
+            if (fileId < 0) fileId = getInt(json, "fileId", -1);
+
             String name = getString(json, KEY_NAME, null);
             if (name == null) name = getString(json, KEY_NAME_ALT, null);
             if (name == null) return null;
@@ -233,7 +261,9 @@ public class FileService {
             String icon        = isFolder ? "📁" : getFileIcon(name);
             String displayName = icon + " " + name;
 
-            return new FileItem(displayName, sizeStr, fileType, lastMod, permission, syncStatus, folderName);
+            FileItem item = new FileItem(displayName, sizeStr, fileType, lastMod, permission, syncStatus, folderName);
+            item.setFileId(fileId); // Gán fileId vào FileItem
+            return item;
 
         } catch (Exception e) {
             System.err.println("Error creating FileItem: " + e.getMessage());
