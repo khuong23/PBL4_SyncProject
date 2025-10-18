@@ -246,6 +246,24 @@ public class MainView implements IMainView {
         // Setup default folders ban đầu
         setupDefaultFolders(rootItem);
 
+        // --- Thêm ContextMenu ---
+        ContextMenu folderContextMenu = new ContextMenu();
+        MenuItem deleteItem = new MenuItem("🗑️ Xóa thư mục");
+        folderContextMenu.getItems().add(deleteItem);
+        treeDirectory.setContextMenu(folderContextMenu);
+
+        // Chỉ hiển thị menu khi click chuột phải vào một thư mục hợp lệ (không phải root)
+        treeDirectory.setOnContextMenuRequested(event -> {
+            TreeItem<Folders> selectedItem = treeDirectory.getSelectionModel().getSelectedItem();
+            // Không hiển thị nếu không chọn gì, hoặc chọn root, hoặc giá trị là null
+            if (selectedItem == null || selectedItem == treeDirectory.getRoot() || 
+                selectedItem.getValue() == null || selectedItem.getValue().getFolderId() <= 1) {
+                folderContextMenu.hide();
+                event.consume();
+            }
+        });
+        // --- Kết thúc thêm ContextMenu ---
+
         // Selection listener - now receives Folders object
         treeDirectory.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
             if (newVal != null && newVal.getValue() != null) {
@@ -463,6 +481,23 @@ public class MainView implements IMainView {
     @Override
     public String getCurrentDirectory() {
         return currentDirectory;
+    }
+
+    @Override
+    public Folders getSelectedFolder() {
+        TreeItem<Folders> selectedItem = treeDirectory.getSelectionModel().getSelectedItem();
+        if (selectedItem != null && selectedItem != treeDirectory.getRoot()) {
+            return selectedItem.getValue();
+        }
+        return null; // Không có thư mục hợp lệ nào được chọn
+    }
+
+    @Override
+    public void clearFileListDisplay() {
+        Platform.runLater(() -> {
+            tableFiles.setItems(FXCollections.observableArrayList()); // Đặt danh sách rỗng
+            setFileCount(0); // Cập nhật số lượng file
+        });
     }
 
     @Override

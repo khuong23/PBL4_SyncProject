@@ -25,6 +25,7 @@ public class FileService {
     private static final String ACTION_LIST_FILES  = "GET_FILE_LIST";
     private static final String ACTION_FOLDER_TREE = "FOLDER_TREE";
     private static final String ACTION_DOWNLOAD_FILE = "DOWNLOAD_FILE"; // Action mới
+    private static final String ACTION_DELETE_FILE = "DELETE_FILE"; // Action xóa file
 
     private static final String KEY_FOLDER_ID     = "folderId";
     private static final String KEY_FILES         = "files";
@@ -103,6 +104,29 @@ public class FileService {
         data.addProperty("folderId", folderId);
         data.addProperty("fileName", fileName); // Server hỗ trợ tìm theo cặp này
         Request request = new Request(ACTION_DOWNLOAD_FILE, data);
+        return networkService.sendRequest(request);
+    }
+
+    /** Gửi yêu cầu xóa file bằng fileId */
+    public Response deleteFile(int fileId) throws Exception {
+        if (fileId <= 0) {
+            throw new IllegalArgumentException("File ID không hợp lệ.");
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId);
+        Request request = new Request(ACTION_DELETE_FILE, data);
+        return networkService.sendRequest(request);
+    }
+
+    /** Gửi yêu cầu xóa file bằng tên và folderId */
+    public Response deleteFile(int folderId, String fileName) throws Exception {
+        if (folderId <= 0 || fileName == null || fileName.isBlank()) {
+            throw new IllegalArgumentException("Folder ID hoặc File Name không hợp lệ.");
+        }
+        JsonObject data = new JsonObject();
+        data.addProperty("folderId", folderId);
+        data.addProperty("fileName", fileName);
+        Request request = new Request(ACTION_DELETE_FILE, data);
         return networkService.sendRequest(request);
     }
 

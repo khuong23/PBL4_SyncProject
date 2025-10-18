@@ -38,10 +38,11 @@ public class FolderService {
     }
 
     /** Xoá thư mục */
-    public Response deleteFolder(int folderId) throws Exception {
+    public Response deleteFolder(int folderId, boolean recursive) throws Exception {
         if (folderId <= 0) throw new IllegalArgumentException("folderId không hợp lệ");
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
+        data.addProperty("recursive", recursive); // Gửi cờ recursive lên server
         return net.sendRequest(new Request("DELETE_FOLDER", data));
     }
 

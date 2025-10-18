@@ -37,6 +37,8 @@ public interface IMainView {
     void updateDirectoryTree();
     void selectDirectory(String directory);
     String getCurrentDirectory();
+    com.pbl4.syncproject.common.model.Folders getSelectedFolder(); // Lấy thư mục đang chọn từ TreeView
+    void clearFileListDisplay(); // Xóa danh sách file hiển thị
 
     // Search and Filter Methods
     void filterFiles(String searchText);

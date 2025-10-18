@@ -13,9 +13,11 @@ import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.fxml.Initializable;
+import javafx.geometry.Insets;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -26,6 +28,7 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.ResourceBundle;
 
 /**
@@ -87,6 +90,7 @@ public class MainController implements Initializable {
         // Chỉ setup UI & handlers. Services sẽ được khởi tạo trong initAfterLogin()
         initializeView();
         setupEventHandlers();
+        setupFolderContextMenuAction(); // Gắn action cho ContextMenu của TreeView
     }
 
     // ========= Inject từ LoginController =========
@@ -201,6 +205,19 @@ public class MainController implements Initializable {
         mainView.setOnFileDoubleClick(this::handleFileAction);
     }
 
+    // Gắn action cho ContextMenu của TreeView (sau khi MainView đã tạo ContextMenu)
+    private void setupFolderContextMenuAction() {
+        ContextMenu contextMenu = treeDirectory.getContextMenu();
+        if (contextMenu != null && !contextMenu.getItems().isEmpty()) {
+            MenuItem deleteItem = contextMenu.getItems().stream()
+                    .filter(item -> item.getText().contains("Xóa"))
+                    .findFirst().orElse(null);
+            if (deleteItem != null) {
+                deleteItem.setOnAction(event -> handleDeleteFolder());
+            }
+        }
+    }
+
     // ========= Sau login =========
 
     private void loadInitialData() {
@@ -302,6 +319,80 @@ public class MainController implements Initializable {
     @FXML private void handlePermissions() { openPermissions(); }
     @FXML private void handleSettings() { openSettings(); }
     @FXML private void handleSearch() { search(); }
+
+    // Handler cho xóa thư mục từ ContextMenu
+    private void handleDeleteFolder() {
+        Folders selectedFolder = mainView.getSelectedFolder(); // Lấy thư mục đang chọn từ View
+
+        if (selectedFolder == null || selectedFolder.getFolderId() <= 1) { // ID 1 là root
+            mainView.showAlert("Thông báo", "Vui lòng chọn một thư mục (không phải thư mục gốc) để xóa.", IMainView.AlertType.INFORMATION);
+            return;
+        }
+
+        int folderIdToDelete = selectedFolder.getFolderId();
+        String folderNameToDelete = selectedFolder.getFolderName();
+
+        // Hỏi xác nhận và tùy chọn xóa đệ quy
+        Alert confirmDialog = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmDialog.setTitle("Xác nhận xóa thư mục");
+        confirmDialog.setHeaderText("Bạn có chắc chắn muốn xóa thư mục '" + folderNameToDelete + "'?");
+        confirmDialog.setContentText("Chọn 'Xóa cả nội dung' nếu muốn xóa thư mục này và tất cả file/thư mục con bên trong.");
+
+        // Thêm CheckBox vào Dialog Pane
+        CheckBox recursiveCheckBox = new CheckBox("Xóa cả nội dung bên trong (Đệ quy)");
+        Label warningLabel = new Label("Cảnh báo: Hành động này không thể hoàn tác!");
+        warningLabel.setStyle("-fx-text-fill: red; -fx-font-weight: bold;");
+        VBox content = new VBox(10, recursiveCheckBox, warningLabel);
+        content.setPadding(new Insets(10, 0, 0, 0));
+        confirmDialog.getDialogPane().setContent(content);
+
+        Optional<ButtonType> result = confirmDialog.showAndWait();
+
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            boolean recursive = recursiveCheckBox.isSelected(); // Lấy trạng thái checkbox
+            mainView.setStatusMessage("Đang xóa thư mục '" + folderNameToDelete + "'...");
+
+            TaskWrapper.executeAsync(
+                "Đang xóa thư mục...",
+                () -> { // Background Task
+                    try {
+                        // Gọi service với folderId và cờ recursive
+                        return folderService.deleteFolder(folderIdToDelete, recursive);
+                    } catch (Exception e) {
+                        throw new RuntimeException("Lỗi khi gửi yêu cầu xóa thư mục: " + e.getMessage(), e);
+                    }
+                },
+                (response) -> { // onSuccess - Chạy trên UI Thread
+                    if ("success".equalsIgnoreCase(response.getStatus())) {
+                        mainView.setStatusMessage("Đã xóa thư mục '" + folderNameToDelete + "'.");
+                        mainView.refreshFolderTree(); // Cập nhật lại cây thư mục
+                        mainView.clearFileListDisplay(); // Xóa sạch danh sách file đang hiển thị
+                        mainView.showAlert("Thành công", response.getMessage() != null ? response.getMessage() : "Xóa thư mục thành công.", IMainView.AlertType.INFORMATION);
+                    } else {
+                        // Hiển thị lỗi từ server (ví dụ: thư mục không rỗng và recursive=false)
+                        String error = response.getMessage() != null ? response.getMessage() : "Không thể xóa thư mục.";
+                        if (response.getData() != null && response.getData().isJsonObject()) {
+                            JsonObject errorData = response.getData().getAsJsonObject();
+                            if (errorData.has("childFolders") || errorData.has("childFiles")) {
+                                error += String.format("\n(Thư mục con: %d, File con: %d)",
+                                        errorData.has("childFolders") ? errorData.get("childFolders").getAsInt() : 0,
+                                        errorData.has("childFiles") ? errorData.get("childFiles").getAsInt() : 0);
+                            }
+                        }
+                        mainView.showAlert("Lỗi Xóa Thư Mục", error, IMainView.AlertType.ERROR);
+                        mainView.setStatusMessage("Xóa thư mục thất bại.");
+                    }
+                },
+                (errorMsg) -> { // onError - Chạy trên UI Thread
+                    mainView.showAlert("Lỗi Xóa Thư Mục", "Xóa thư mục thất bại: " + errorMsg, IMainView.AlertType.ERROR);
+                    mainView.setStatusMessage("Xóa thư mục thất bại.");
+                },
+                mainView // Truyền mainView để TaskWrapper cập nhật UI
+            );
+        } else {
+            mainView.setStatusMessage("Đã hủy thao tác xóa thư mục.");
+        }
+    }
 
     private void logout() {
         boolean confirmed = mainView.showConfirmDialog(
@@ -523,13 +614,60 @@ public class MainController implements Initializable {
     }
 
     private void deleteFile(FileItem fileItem) {
+        if (fileItem == null) {
+            mainView.showAlert("Lỗi", "Chưa chọn file để xóa.", IMainView.AlertType.WARNING);
+            return;
+        }
+
+        String originalFileName = getOriginalFileName(fileItem.getFileName());
+        int currentFolderIdForDelete = this.currentFolderId;
+
+        if (originalFileName == null || currentFolderIdForDelete <= 0) {
+            mainView.showAlert("Lỗi", "Không thể xác định file cần xóa (thiếu tên hoặc thư mục).", IMainView.AlertType.ERROR);
+            return;
+        }
+
+        // Xác nhận trước khi xóa
         boolean confirmed = mainView.showConfirmDialog(
                 "Xác nhận xóa",
-                "Bạn có chắc chắn muốn xóa file: " + fileItem.getFileName() + "?"
+                "Bạn có chắc chắn muốn xóa file: '" + originalFileName + "' không?\nHành động này không thể hoàn tác."
         );
-        if (confirmed) {
-            mainView.setStatusMessage("Chức năng delete sẽ được implement");
+
+        if (!confirmed) {
+            mainView.setStatusMessage("Đã hủy thao tác xóa.");
+            return;
         }
+
+        mainView.setStatusMessage("Đang xóa file '" + originalFileName + "'...");
+
+        TaskWrapper.executeAsync(
+            "Đang xóa file...",
+            () -> { // Background Task
+                try {
+                    // Gọi service để xóa file bằng folderId và fileName
+                    return fileService.deleteFile(currentFolderIdForDelete, originalFileName);
+                } catch (Exception e) {
+                    throw new RuntimeException("Lỗi khi gửi yêu cầu xóa: " + e.getMessage(), e);
+                }
+            },
+            (response) -> { // onSuccess - Chạy trên UI Thread
+                if ("success".equalsIgnoreCase(response.getStatus())) {
+                    mainView.setStatusMessage("Đã xóa file '" + originalFileName + "' thành công.");
+                    // Refresh lại danh sách file trong thư mục hiện tại
+                    loadDirectoryFiles(currentFolderIdForDelete);
+                } else {
+                    // Hiển thị lỗi từ server
+                    String error = response.getMessage() != null ? response.getMessage() : "Không thể xóa file.";
+                    mainView.showAlert("Lỗi Xóa File", error, IMainView.AlertType.ERROR);
+                    mainView.setStatusMessage("Xóa file thất bại.");
+                }
+            },
+            (errorMsg) -> { // onError - Chạy trên UI Thread
+                mainView.showAlert("Lỗi Xóa File", "Xóa file thất bại: " + errorMsg, IMainView.AlertType.ERROR);
+                mainView.setStatusMessage("Xóa file thất bại.");
+            },
+            mainView // Truyền mainView để TaskWrapper cập nhật UI
+        );
     }
 
     private void openFXMLWindow(String fxmlPath, String title, int width, int height) {
