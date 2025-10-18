@@ -18,6 +18,8 @@ public class Dispatcher {
         handlers.put("UPLOAD_FILE",    new UploadFileHandler());
         handlers.put("CREATE_FOLDER",  new CreateFolderHandler());
         handlers.put("DOWNLOAD_FILE",  new DownloadFileHandler());
+        handlers.put("DELETE_FOLDER",  new DeleteFolderHandler());
+        handlers.put("DELETE_FILE",  new DeleteFileHandler());
 
         // PING: kiểm tra kết nối đơn giản
         handlers.put("PING", req -> {
