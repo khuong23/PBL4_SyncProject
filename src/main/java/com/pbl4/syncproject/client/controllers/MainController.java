@@ -23,7 +23,9 @@ import javafx.stage.Stage;
 
 import java.io.File;
 import java.net.URL;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.ResourceBundle;
 
 /**
@@ -79,6 +81,9 @@ public class MainController implements Initializable {
     private String currentUser = "admin";
     private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
     private int currentFolderId = -1; // Track selected folder ID for uploads and operations
+    
+    // Map để theo dõi các TreeItem đã tải con hay chưa (cho lazy loading)
+    private final Map<TreeItem<Folders>, Boolean> loadedChildrenMap = new HashMap<>();
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
@@ -249,6 +254,16 @@ public class MainController implements Initializable {
      * Tải và điền các thư mục con cho một TreeItem với lazy loading
      */
     private void loadAndPopulateChildren(TreeItem<Folders> parentItem) {
+        // Kiểm tra xem đã tải con chưa
+        Boolean loaded = loadedChildrenMap.get(parentItem);
+        if (loaded != null && loaded) {
+            // Đã tải rồi, không cần tải lại
+            return;
+        }
+        
+        // Đánh dấu là đang tải
+        loadedChildrenMap.put(parentItem, true);
+        
         // Hiển thị trạng thái đang tải
         Folders loadingFolder = new Folders();
         loadingFolder.setFolderId(-1);
@@ -275,13 +290,19 @@ public class MainController implements Initializable {
             (List<Folders> children) -> {
                 // Xóa item "Đang tải..." và thêm các con thực sự
                 parentItem.getChildren().clear();
-                for (Folders folder : children) {
-                    TreeItem<Folders> childItem = createTreeItemWithLazyLoading(folder);
-                    parentItem.getChildren().add(childItem);
+                if (children != null && !children.isEmpty()) {
+                    for (Folders folder : children) {
+                        TreeItem<Folders> childItem = createTreeItemWithLazyLoading(folder);
+                        parentItem.getChildren().add(childItem);
+                    }
                 }
+                // Không cần placeholder nếu không có con, TreeView sẽ tự ẩn mũi tên
             },
             (String error) -> {
                 parentItem.getChildren().clear(); // Xóa "Đang tải..."
+                loadedChildrenMap.put(parentItem, false); // Đặt lại để có thể thử lại
+                // Thêm lại placeholder để user có thể thử lại
+                addPlaceholderNode(parentItem);
                 mainView.showAlert("Lỗi", "Không thể tải danh sách thư mục: " + error, IMainView.AlertType.ERROR);
             },
             mainView
@@ -289,16 +310,41 @@ public class MainController implements Initializable {
     }
     
     /**
-     * Tạo một TreeItem và thêm listener lazy loading
+     * Thêm node placeholder để hiển thị mũi tên expand
+     */
+    private void addPlaceholderNode(TreeItem<Folders> item) {
+        if (item != null && item.getChildren().isEmpty()) {
+            Folders placeholder = new Folders();
+            placeholder.setFolderId(0); // ID đặc biệt cho placeholder
+            placeholder.setFolderName(""); // Không hiển thị text
+            item.getChildren().add(new TreeItem<>(placeholder));
+        }
+    }
+    
+    /**
+     * Tạo một TreeItem và thêm listener lazy loading với placeholder
      */
     private TreeItem<Folders> createTreeItemWithLazyLoading(Folders folder) {
         TreeItem<Folders> item = new TreeItem<>(folder);
+        
+        // Thêm placeholder để hiển thị mũi tên expand
+        // Node này sẽ bị xóa khi thực sự tải con
+        addPlaceholderNode(item);
+        
+        // Đánh dấu chưa tải con
+        loadedChildrenMap.put(item, false);
 
         // Thêm listener cho việc mở rộng để lazy load các con
         item.expandedProperty().addListener((observable, oldValue, newValue) -> {
-            // Nếu item được mở rộng và chưa có con nào được tải
-            if (newValue && item.getChildren().isEmpty()) {
-                loadAndPopulateChildren(item);
+            // Nếu item được mở rộng và chưa tải con
+            if (newValue) {
+                Boolean loaded = loadedChildrenMap.get(item);
+                // Kiểm tra xem có phải là placeholder không (1 con duy nhất với ID = 0)
+                boolean hasOnlyPlaceholder = item.getChildren().size() == 1 && 
+                                            item.getChildren().get(0).getValue().getFolderId() == 0;
+                if ((loaded == null || !loaded) && hasOnlyPlaceholder) {
+                    loadAndPopulateChildren(item);
+                }
             }
         });
 

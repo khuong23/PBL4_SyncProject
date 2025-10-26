@@ -2,6 +2,7 @@ package com.pbl4.syncproject.client.views;
 
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.common.model.Folders;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -13,7 +14,8 @@ import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.io.File;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -70,6 +72,9 @@ public class MainView implements IMainView {
     // Data
     private ObservableList<FileItem> originalFileItems = FXCollections.observableArrayList();
     private String currentDirectory = "/shared";
+    
+    // Map để theo dõi các TreeItem đã tải con hay chưa (cho lazy loading)
+    private final Map<TreeItem<Folders>, Boolean> loadedChildrenMap = new HashMap<>();
 
     // Services
     private FileService fileService;
@@ -123,9 +128,10 @@ public class MainView implements IMainView {
         System.out.println("📁 FileService đã được cập nhật trong MainView");
 
         // Tự động refresh folder tree sau khi FileService được set
-        if (fileService != null) {
-            refreshFolderTree();
-        }
+        // REMOVED: Gây duplicate loading vì MainController đã gọi loadInitialData()
+        // if (fileService != null) {
+        //     refreshFolderTree();
+        // }
     }
 
     /**
@@ -135,13 +141,21 @@ public class MainView implements IMainView {
     @Override
     public void refreshFolderTree() {
         if (treeDirectory != null && treeDirectory.getRoot() != null) {
-            if (fileService != null) {
-                System.out.println("🔄 Refreshing folder tree từ database...");
-                loadFoldersFromDatabase(treeDirectory.getRoot());
-            } else {
-                System.out.println("⚠️ FileService chưa sẵn sàng, sử dụng default folders");
-                setupDefaultFolders(treeDirectory.getRoot());
-            }
+            // Xóa trạng thái đã tải của tất cả các node
+            loadedChildrenMap.clear();
+
+            TreeItem<Folders> rootItem = treeDirectory.getRoot();
+            rootItem.getChildren().clear(); // Xóa hết con cũ
+            rootItem.setExpanded(false); // Đóng root lại
+
+            // Thêm lại placeholder cho root và đánh dấu chưa tải
+            addPlaceholderNode(rootItem);
+            loadedChildrenMap.put(rootItem, false); // Đánh dấu root chưa tải con
+
+            System.out.println("🔄 Folder tree refreshed, lazy load state reset.");
+            
+            // Có thể tự động mở rộng và tải con của root nếu muốn
+            // rootItem.setExpanded(true); // Nếu muốn tự mở root sau khi refresh
         }
     }
 
@@ -238,20 +252,24 @@ public class MainView implements IMainView {
     private void setupDirectoryTree() {
         // Create root folder object
         Folders rootFolder = new Folders();
-        rootFolder.setFolderId(0);
-        rootFolder.setFolderName("Thư mục đồng bộ");
+        rootFolder.setFolderId(1); // ID thư mục gốc là 1
+        rootFolder.setFolderName("Thư mục gốc"); // Đặt tên rõ ràng hơn
 
         // Create root TreeItem
         TreeItem<Folders> rootItem = new TreeItem<>(rootFolder);
-        rootItem.setExpanded(true);
+        rootItem.setExpanded(false); // Bắt đầu không mở rộng
         treeDirectory.setRoot(rootItem);
         treeDirectory.setShowRoot(true);
 
-        // KHÔNG load từ DB ngay lập tức - chỉ load sau khi FileService được set
-        // loadFoldersFromDatabase(rootItem);
+        // *** LAZY LOADING: Thêm placeholder để hiển thị mũi tên mở rộng ***
+        addPlaceholderNode(rootItem);
 
-        // Setup default folders ban đầu
-        setupDefaultFolders(rootItem);
+        // Lắng nghe sự kiện mở rộng/thu gọn cho root
+        rootItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue) { // Chỉ tải khi mở rộng (newValue = true)
+                loadChildrenIfNeeded(rootItem);
+            }
+        });
 
         // --- Thêm ContextMenu ---
         ContextMenu folderContextMenu = new ContextMenu();
@@ -281,64 +299,128 @@ public class MainView implements IMainView {
             }
         });
 
-        // Custom cell factory to display folder icon + name
+        // Custom cell factory to display folder icon + name và thêm lazy loading cho từng cell
         treeDirectory.setCellFactory(tv -> new TreeCell<Folders>() {
             @Override
             protected void updateItem(Folders item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty || item == null) {
+                if (empty || item == null || item.getFolderId() == 0) { // Bỏ qua node placeholder
                     setText(null);
                     setGraphic(null);
                 } else {
                     setText("📁 " + item.getFolderName());
+
+                    // *** LAZY LOADING: Thêm listener mở rộng cho từng cell ***
+                    TreeItem<Folders> treeItem = getTreeItem();
+                    if (treeItem != null && treeItem != tv.getRoot()) {
+                        // Nếu chưa từng lắng nghe, thêm listener
+                        if (!loadedChildrenMap.containsKey(treeItem)) {
+                            treeItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
+                                if (newValue) { // Chỉ tải khi mở rộng
+                                    loadChildrenIfNeeded(treeItem);
+                                }
+                            });
+                            // Đánh dấu đã thêm listener và thêm placeholder
+                            loadedChildrenMap.put(treeItem, false); // Chưa tải con
+                            addPlaceholderNode(treeItem);
+                        }
+                    }
                 }
             }
         });
     }
 
     /**
-     * Load folder tree from server via FileService
+     * Thêm một node giả vào TreeItem để nó hiển thị mũi tên mở rộng.
+     * Node giả này sẽ bị xóa khi dữ liệu con thật được tải.
      */
-    private void loadFoldersFromDatabase(TreeItem<Folders> rootItem) {
-        new Thread(() -> {
-            try {
-                if (fileService == null) {
-                    throw new IllegalStateException("FileService chưa được khởi tạo");
-                }
-                List<Folders> folders = fileService.fetchAndParseFolderTree();
-                Platform.runLater(() -> {
-                    rootItem.getChildren().clear();
-                    for (Folders folder : folders) {
-                        TreeItem<Folders> item = new TreeItem<>(folder);
-                        rootItem.getChildren().add(item);
-                    }
-                    if (!folders.isEmpty()) {
-                        rootItem.setExpanded(true);
-                    }
-                });
-            } catch (Exception ex) {
-                // Fallback to default static folders
-                System.err.println("Failed to load folders from database: " + ex.getMessage());
-                Platform.runLater(() -> setupDefaultFolders(rootItem));
-            }
-        }).start();
+    private void addPlaceholderNode(TreeItem<Folders> item) {
+        if (item != null && item.getChildren().isEmpty()) {
+            // Tạo một đối tượng Folders giả với ID đặc biệt (0 = placeholder)
+            Folders placeholder = new Folders();
+            placeholder.setFolderId(0);
+            placeholder.setFolderName("Loading...");
+            item.getChildren().add(new TreeItem<>(placeholder));
+        }
     }
 
     /**
-     * Fallback default folders when server not available
+     * Tải các thư mục con cho một TreeItem nếu chúng chưa được tải.
      */
-    private void setupDefaultFolders(TreeItem<Folders> rootItem) {
-        rootItem.getChildren().clear();
+    private void loadChildrenIfNeeded(TreeItem<Folders> parentItem) {
+        // Kiểm tra xem đã tải con chưa (trạng thái trong map)
+        Boolean loaded = loadedChildrenMap.get(parentItem);
+        // Chỉ tải nếu chưa tải (loaded == false) và có FileService
+        if (loaded != null && !loaded && fileService != null) {
+            Folders parentFolder = parentItem.getValue();
+            if (parentFolder == null || parentFolder.getFolderId() <= 0) {
+                // Không tải con cho node giả hoặc node không hợp lệ
+                return;
+            }
+            int parentId = parentFolder.getFolderId();
 
-        Folders shared = new Folders(1, "shared", null, null, null);
-        Folders documents = new Folders(2, "documents", null, null, null);
-        Folders images = new Folders(3, "images", null, null, null);
-        Folders videos = new Folders(4, "videos", null, null, null);
+            System.out.println("🔄 Loading children for: " + parentFolder.getFolderName() + " (ID=" + parentId + ")");
 
-        rootItem.getChildren().add(new TreeItem<>(shared));
-        rootItem.getChildren().add(new TreeItem<>(documents));
-        rootItem.getChildren().add(new TreeItem<>(images));
-        rootItem.getChildren().add(new TreeItem<>(videos));
+            // Hiển thị thông báo đang tải
+            setStatusMessage("⏳ Đang tải thư mục: " + parentFolder.getFolderName() + "...");
+            showLoadingProgress(true);
+
+            // Đánh dấu là đang tải để tránh gọi lại
+            loadedChildrenMap.put(parentItem, true); // Đánh dấu là đã bắt đầu tải (true)
+
+            // Gọi FileService để lấy thư mục con (chạy nền)
+            TaskWrapper.executeAsync(
+                "Đang tải thư mục con...", // Thông báo trạng thái
+                () -> { // Nhiệm vụ chạy nền
+                    try {
+                        return fileService.fetchAndParseFolderTree(parentId); // Gọi API lấy con
+                    } catch (Exception e) {
+                        throw new RuntimeException("Lỗi tải thư mục con cho ID=" + parentId + ": " + e.getMessage(), e);
+                    }
+                },
+                (childFolders) -> { // onSuccess - Chạy trên UI Thread
+                    // Xóa node placeholder "Loading..." trước khi thêm con thật
+                    parentItem.getChildren().removeIf(item -> item.getValue().getFolderId() == 0);
+
+                    if (childFolders != null && !childFolders.isEmpty()) {
+                        for (Folders child : childFolders) {
+                            TreeItem<Folders> childItem = new TreeItem<>(child);
+                            // CellFactory sẽ tự động thêm placeholder và listener khi hiển thị
+                            parentItem.getChildren().add(childItem);
+                        }
+                        // Hiển thị thông báo thành công
+                        setStatusMessage("✅ Đã tải " + childFolders.size() + " thư mục con từ: " + parentFolder.getFolderName());
+                    } else {
+                        setStatusMessage("📁 Thư mục " + parentFolder.getFolderName() + " không có thư mục con");
+                    }
+                    showLoadingProgress(false);
+                    System.out.println("✅ Loaded " + (childFolders != null ? childFolders.size() : 0) + " children for: " + parentFolder.getFolderName());
+                },
+                (errorMsg) -> { // onError - Chạy trên UI Thread
+                    System.err.println("❌ Error loading children for " + parentFolder.getFolderName() + ": " + errorMsg);
+                    // Hiển thị lỗi cho người dùng
+                    setStatusMessage("❌ Lỗi tải thư mục: " + errorMsg);
+                    showLoadingProgress(false);
+                    showAlert("Lỗi Tải Thư Mục", "Không thể tải các thư mục con: " + errorMsg, AlertType.ERROR);
+                    // Đặt lại trạng thái để có thể thử tải lại khi click lần nữa
+                    loadedChildrenMap.put(parentItem, false);
+                    // Xóa node "Loading..." nếu có lỗi
+                    parentItem.getChildren().removeIf(item -> item.getValue().getFolderId() == 0);
+                    // Có thể thêm lại placeholder để user thử lại
+                    addPlaceholderNode(parentItem);
+                },
+                this // Truyền MainView để TaskWrapper có thể gọi showAlert, setStatusMessage
+            );
+        } else if (loaded == null) {
+            // Trường hợp TreeItem chưa được quản lý bởi map (có thể xảy ra nếu CellFactory chưa chạy)
+            System.out.println("Item not managed yet: " + parentItem.getValue().getFolderName());
+            // Thử đánh dấu và tải lại
+            loadedChildrenMap.put(parentItem, false);
+            loadChildrenIfNeeded(parentItem);
+        } else {
+            // Đã tải rồi hoặc đang tải, không cần làm gì
+            System.out.println("Children already loaded or loading for: " + parentItem.getValue().getFolderName());
+        }
     }
 
     private void setupSearchFunctionality() {
@@ -393,6 +475,23 @@ public class MainView implements IMainView {
             progressSync.setVisible(visible);
             lblSyncProgress.setText(message);
             lblSyncProgress.setVisible(visible);
+        });
+    }
+
+    /**
+     * Hiển thị/ẩn progress bar khi đang tải dữ liệu
+     */
+    private void showLoadingProgress(boolean show) {
+        Platform.runLater(() -> {
+            if (show) {
+                progressSync.setProgress(-1); // Indeterminate progress
+                progressSync.setVisible(true);
+                lblSyncProgress.setText("Đang tải...");
+                lblSyncProgress.setVisible(true);
+            } else {
+                progressSync.setVisible(false);
+                lblSyncProgress.setVisible(false);
+            }
         });
     }
 

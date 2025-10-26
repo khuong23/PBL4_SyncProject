@@ -171,15 +171,15 @@ public class NetworkService {
 
     /**
      * Lấy folder tree từ server (children of specific parent)
-     * @param parentId ID của thư mục cha (0 = lấy thư mục gốc)
+     * @param parentId ID của thư mục cha (0 = lấy thư mục gốc, 1 = lấy children của root)
      */
     public Response getFolderTree(int parentId) throws Exception {
         validateServerAddress();
         JsonObject data = new JsonObject();
-        // ID 0 có nghĩa là yêu cầu các thư mục gốc
-        if (parentId > 0) {
-            data.addProperty("parentId", parentId);
-        }
+        // Luôn gửi parentId để server biết chính xác cần lấy gì
+        // parentId = 0: lấy root folders (ParentFolderID IS NULL)
+        // parentId = 1: lấy children của root folder
+        data.addProperty("parentId", parentId);
         Request request = new Request("FOLDER_TREE", data);
         return sendRequest(request);
     }

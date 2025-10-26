@@ -27,16 +27,23 @@ public class FolderTreeHandler implements RequestHandler {
             FolderDAO folderDAO = new FolderDAO(conn);
             
             JsonObject data = req.getData();
-            // SỬA ĐỔI: Nếu không có parentId hoặc parentId <= 0, ta sẽ lấy thư mục gốc.
-            Integer parentId = (data != null && data.has("parentId") && data.get("parentId").getAsInt() > 0)
-                    ? data.get("parentId").getAsInt()
-                    : null;
+            // Lấy parentId từ request
+            // parentId = 0 hoặc null: lấy root folders (ParentFolderID IS NULL)
+            // parentId > 0: lấy children của folder có ID = parentId
+            Integer parentId = null;
+            if (data != null && data.has("parentId")) {
+                int pid = data.get("parentId").getAsInt();
+                if (pid > 0) {
+                    parentId = pid;
+                }
+            }
 
             List<Folders> children;
             if (parentId == null) {
                 // Lấy các thư mục gốc (ParentFolderID IS NULL)
                 children = folderDAO.getRootFolders();
             } else {
+                // Lấy các thư mục con của parentId
                 children = folderDAO.getChildren(parentId);
             }
 
