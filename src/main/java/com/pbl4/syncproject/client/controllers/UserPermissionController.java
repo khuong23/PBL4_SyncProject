@@ -301,34 +301,71 @@ public class UserPermissionController implements Initializable {
             return;
         }
 
-        // In real implementation, this would query current permissions from server
-        StringBuilder currentPerms = new StringBuilder();
-        currentPerms.append("Người dùng: ").append(user).append("\n");
-        currentPerms.append("File/Thư mục: ").append(filePath).append("\n");
-        currentPerms.append("Quyền hiện tại:\n");
-
-        // Sample permissions (would come from server)
-        if (user.equals("admin")) {
-            currentPerms.append("- Đọc: Có\n");
-            currentPerms.append("- Ghi: Có\n");
-            currentPerms.append("- Sửa đổi: Có\n");
-            currentPerms.append("- Xóa: Có\n");
-            currentPerms.append("- Thực thi: Có\n");
-        } else if (user.equals("guest")) {
-            currentPerms.append("- Đọc: Có\n");
-            currentPerms.append("- Ghi: Không\n");
-            currentPerms.append("- Sửa đổi: Không\n");
-            currentPerms.append("- Xóa: Không\n");
-            currentPerms.append("- Thực thi: Không\n");
-        } else {
-            currentPerms.append("- Đọc: Có\n");
-            currentPerms.append("- Ghi: Có\n");
-            currentPerms.append("- Sửa đổi: Không\n");
-            currentPerms.append("- Xóa: Không\n");
-            currentPerms.append("- Thực thi: Không\n");
+        // Kiểm tra có kết nối server không
+        if (networkService == null || selectedFolderId <= 0) {
+            txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
+                                        "File/Thư mục: " + filePath + "\n" +
+                                        "Quyền hiện tại: Chưa kết nối server hoặc chưa chọn thư mục");
+            return;
         }
 
-        txtCurrentPermissions.setText(currentPerms.toString());
+        // Lấy quyền thực tế từ server
+        try {
+            Integer targetUserId = userMap.get(user);
+            if (targetUserId == null || targetUserId <= 0) {
+                txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
+                                            "File/Thư mục: " + filePath + "\n" +
+                                            "Quyền hiện tại: Không xác định được userId");
+                return;
+            }
+
+            // Gửi request GET_FOLDER_PERMISSIONS
+            JsonObject data = new JsonObject();
+            data.addProperty("userId", targetUserId);
+            data.addProperty("folderId", selectedFolderId);
+
+            Request req = new Request("GET_FOLDER_PERMISSIONS", data);
+            Response resp = networkService.sendRequest(req);
+
+            StringBuilder currentPerms = new StringBuilder();
+            currentPerms.append("Người dùng: ").append(user).append("\n");
+            currentPerms.append("File/Thư mục: ").append(filePath).append("\n");
+            currentPerms.append("Quyền hiện tại:\n");
+
+            if (resp != null && "success".equalsIgnoreCase(resp.getStatus()) && resp.getData() != null) {
+                JsonObject responseData = resp.getData().getAsJsonObject();
+                JsonArray permissions = responseData.has("permissions") 
+                    ? responseData.getAsJsonArray("permissions") 
+                    : new JsonArray();
+
+                // Convert permissions to Set for easier checking
+                java.util.Set<String> permSet = new java.util.HashSet<>();
+                for (com.google.gson.JsonElement elem : permissions) {
+                    permSet.add(elem.getAsString().toUpperCase());
+                }
+
+                // Display permissions
+                currentPerms.append("- Đọc (READ): ").append(permSet.contains("READ") ? "Có" : "Không").append("\n");
+                currentPerms.append("- Ghi (WRITE): ").append(permSet.contains("WRITE") ? "Có" : "Không").append("\n");
+                currentPerms.append("- Xóa (DELETE): ").append(permSet.contains("DELETE") ? "Có" : "Không").append("\n");
+                
+                // Note: EDIT and EXECUTE are not in database schema, so we show them as not available
+                currentPerms.append("\nGhi chú: Hệ thống hiện chỉ hỗ trợ quyền READ, WRITE và DELETE");
+
+            } else {
+                currentPerms.append("Không thể lấy thông tin quyền từ server.\n");
+                if (resp != null) {
+                    currentPerms.append("Lỗi: ").append(resp.getMessage());
+                }
+            }
+
+            txtCurrentPermissions.setText(currentPerms.toString());
+
+        } catch (Exception e) {
+            txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
+                                        "File/Thư mục: " + filePath + "\n" +
+                                        "Quyền hiện tại: Lỗi khi truy vấn - " + e.getMessage());
+        }
     }
 
     private void updatePermissionDisplay() {
