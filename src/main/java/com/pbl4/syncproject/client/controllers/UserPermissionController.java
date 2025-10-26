@@ -15,8 +15,10 @@ import java.util.HashMap;
 import java.util.Map;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.pbl4.syncproject.client.models.NotificationItem;
 import com.pbl4.syncproject.client.services.NetworkService;
 import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 
@@ -43,6 +45,9 @@ public class UserPermissionController implements Initializable {
     private NetworkService networkService;
     private FileService fileService;
     private String currentUser;
+    
+    // NotificationManager
+    private NotificationManager notificationManager = NotificationManager.getInstance();
 
     // Map username -> userId
     private final Map<String, Integer> userMap = new HashMap<>();
@@ -198,6 +203,15 @@ public class UserPermissionController implements Initializable {
             Response resp = networkService.sendRequest(req);
             if (resp != null && "success".equalsIgnoreCase(resp.getStatus())) {
                 showStatus("Đã áp dụng quyền thành công cho " + user, false);
+                
+                // Gửi thông báo
+                String folderPath = txtFilePath.getText();
+                String permString = String.join(", ", permissions);
+                notificationManager.addNotification(
+                    "Admin (" + currentUser + ") đã cấp quyền [" + permString + "] " +
+                    "cho user '" + user + "' trên thư mục '" + folderPath + "'.",
+                    NotificationItem.NotificationType.PERMISSION_CHANGE
+                );
             } else {
                 showStatus("Cấp quyền thất bại: " + (resp != null ? resp.getMessage() : "No response"), true);
             }

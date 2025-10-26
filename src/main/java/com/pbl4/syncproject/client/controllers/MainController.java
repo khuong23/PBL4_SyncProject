@@ -1,25 +1,32 @@
 package com.pbl4.syncproject.client.controllers;
 
 import com.pbl4.syncproject.client.models.FileItem;
+import com.pbl4.syncproject.client.models.NotificationItem;
 import com.pbl4.syncproject.client.services.FileService;
 import com.pbl4.syncproject.client.services.NetworkService;
+import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
 import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
+import com.pbl4.syncproject.client.views.NotificationCell;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.fxml.Initializable;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.layout.StackPane;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
+import org.controlsfx.control.PopOver;
 
 import java.io.File;
 import java.net.URL;
@@ -52,6 +59,10 @@ public class MainController implements Initializable {
     @FXML private Button btnPermissions;
     @FXML private Button btnSettings;
     @FXML private Button btnSearch;
+    
+    // Notification UI Components
+    @FXML private StackPane notificationButtonWrapper;
+    @FXML private Button btnNotifications;
 
     @FXML private TextField txtSearch;
     @FXML private ComboBox<String> cmbViewMode;
@@ -74,6 +85,10 @@ public class MainController implements Initializable {
     private FileService fileService;
     private UploadManager uploadManager;
     private SyncAgent syncAgent;
+    private NotificationManager notificationManager;
+    
+    // PopOver để hiển thị thông báo
+    private PopOver notificationPopOver;
 
     // State
     // THAY ĐỔI: Bỏ biến allFileItems vì chúng ta sẽ không lưu trữ tất cả các file nữa
@@ -91,6 +106,11 @@ public class MainController implements Initializable {
         // Services sẽ được khởi tạo sau khi login thành công
         initializeView();
         setupEventHandlers();
+        
+        // Khởi tạo NotificationManager
+        this.notificationManager = NotificationManager.getInstance();
+        setupNotificationCenter();
+        
         // loadInitialData() sẽ được gọi sau trong setServerAddress()
     }
 
@@ -590,6 +610,13 @@ public class MainController implements Initializable {
                     // Sau khi tải lên thành công, tải lại danh sách tệp cho thư mục hiện tại
                     loadDirectoryFiles(currentFolderId);
                     mainView.setStatusMessage(message);
+                    
+                    // Gửi thông báo
+                    notificationManager.addNotification(
+                        "Bạn đã tải lên thành công file: " + file.getName(),
+                        NotificationItem.NotificationType.FILE_UPLOAD
+                    );
+                    
                 } else {
                     mainView.setStatusMessage("Upload thất bại: " + message);
                 }
@@ -693,6 +720,84 @@ public class MainController implements Initializable {
             // TODO: Implement delete logic via NetworkService
             mainView.setStatusMessage("Chức năng delete sẽ được implement");
         }
+    }
+
+    // === NOTIFICATION CENTER METHODS ===
+    
+    /**
+     * Khởi tạo Trung tâm thông báo (nút chuông, badge, và popover)
+     */
+    private void setupNotificationCenter() {
+        if (notificationButtonWrapper == null || btnNotifications == null) {
+            System.err.println("Notification UI components not initialized");
+            return;
+        }
+        
+        // 1. Tạo Label để làm Badge (số thông báo)
+        Label badge = new Label("0");
+        badge.setStyle(
+            "-fx-background-color: #dc2626; " +
+            "-fx-text-fill: white; " +
+            "-fx-font-size: 10px; " +
+            "-fx-padding: 2 6; " +
+            "-fx-background-radius: 10; " +
+            "-fx-font-weight: bold;"
+        );
+        badge.setVisible(false); // Chỉ hiển thị khi có thông báo
+        badge.setManaged(false); // Không chiếm không gian khi ẩn
+
+        // 2. Binding số thông báo chưa đọc vào Badge
+        notificationManager.unreadCountProperty().addListener((obs, oldVal, newVal) -> {
+            boolean hasUnread = newVal.intValue() > 0;
+            badge.setVisible(hasUnread);
+            badge.setText(String.valueOf(newVal));
+        });
+
+        // 3. Đặt vị trí cho Badge (nằm trên góc phải của nút)
+        StackPane.setAlignment(badge, Pos.TOP_RIGHT);
+        StackPane.setMargin(badge, new Insets(-5, -5, 0, 0));
+        notificationButtonWrapper.getChildren().add(badge);
+    }
+
+    /**
+     * Xử lý sự kiện khi nhấn nút chuông thông báo
+     */
+    @FXML
+    private void handleShowNotifications() {
+        // 1. Khởi tạo PopOver (chỉ 1 lần)
+        if (notificationPopOver == null) {
+            notificationPopOver = new PopOver();
+            notificationPopOver.setArrowLocation(PopOver.ArrowLocation.TOP_CENTER);
+            notificationPopOver.setDetachable(false);
+            notificationPopOver.setHeaderAlwaysVisible(true);
+            notificationPopOver.setTitle("Thông báo");
+            
+            // 2. Tạo ListView
+            ListView<NotificationItem> notificationList = new ListView<>();
+            notificationList.setPrefSize(350, 450); // Kích thước panel
+            
+            // 3. Gán danh sách thông báo từ Manager
+            notificationList.setItems(notificationManager.getNotifications());
+            
+            // 4. Sử dụng CellFactory tùy chỉnh (NotificationCell)
+            notificationList.setCellFactory(lv -> new NotificationCell());
+            
+            // 5. Placeholder khi không có thông báo
+            Label emptyLabel = new Label("Không có thông báo nào");
+            emptyLabel.setStyle("-fx-text-fill: #9ca3af; -fx-padding: 20;");
+            notificationList.setPlaceholder(emptyLabel);
+            
+            // 6. Đặt ListView làm nội dung cho PopOver
+            notificationPopOver.setContentNode(notificationList);
+            
+            // 7. Khi PopOver ẩn đi, đánh dấu đã đọc
+            notificationPopOver.setOnHidden(e -> {
+                notificationManager.markAllAsRead();
+            });
+        }
+        
+        // 8. Hiển thị PopOver bên dưới nút chuông
+        notificationPopOver.show(btnNotifications);
     }
 
     // === UTILITY METHODS ===

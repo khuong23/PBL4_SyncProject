@@ -23,6 +23,15 @@
                     </font>
                 </Label>
                 <Region HBox.hgrow="ALWAYS" />
+                
+                <!-- Notification Button with Badge -->
+                <StackPane fx:id="notificationButtonWrapper" style="-fx-padding: 0 8;">
+                    <Button fx:id="btnNotifications" 
+                            text="🔔" 
+                            onAction="#handleShowNotifications"
+                            style="-fx-font-size: 20px; -fx-background-color: transparent; -fx-text-fill: white; -fx-padding: 6 10; -fx-cursor: hand;"/>
+                </StackPane>
+                
                 <Label fx:id="lblUserInfo" text="User: admin" textFill="white">
                     <font>
                         <Font name="Segoe UI" size="14" />
