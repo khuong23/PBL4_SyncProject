@@ -152,7 +152,14 @@ public class FileService {
                 }
             }
 
-            return new Folders(id, name, parentId, createdAt, lastModified);
+            Folders folder = new Folders(id, name, parentId, createdAt, lastModified);
+            
+            // Parse hasChildren nếu có
+            if (json.has("hasChildren")) {
+                folder.setHasChildren(json.get("hasChildren").getAsBoolean());
+            }
+
+            return folder;
 
         } catch (Exception e) {
             System.err.println("Error creating Folders from JSON: " + e.getMessage());

@@ -15,7 +15,9 @@ public class FolderDAO {
 
     // Lấy tất cả folder con của folder parentId
     public List<Folders> getChildren(int parentId) throws SQLException {
-        String sql = "SELECT * FROM Folders WHERE ParentFolderID = ?";
+        String sql = "SELECT f.*, " +
+                     "(EXISTS (SELECT 1 FROM Folders fc WHERE fc.ParentFolderID = f.FolderID)) AS hasChildren " +
+                     "FROM Folders f WHERE f.ParentFolderID = ? ORDER BY f.FolderName ASC";
         List<Folders> list = new ArrayList<>();
 
         try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
@@ -23,13 +25,15 @@ public class FolderDAO {
             try (ResultSet rs = stm.executeQuery()) {
                 while (rs.next()) {
                     Timestamp tsLastModified = rs.getTimestamp("LastModified");
-                    list.add(new Folders(
+                    Folders folder = new Folders(
                             rs.getInt("FolderID"),
                             rs.getString("FolderName"),
                             (Integer) rs.getObject("ParentFolderID"),
                             rs.getTimestamp("CreatedAt").toLocalDateTime(),
                             tsLastModified != null ? tsLastModified.toLocalDateTime() : null
-                    ));
+                    );
+                    folder.setHasChildren(rs.getBoolean("hasChildren"));
+                    list.add(folder);
                 }
             }
         }
@@ -38,20 +42,24 @@ public class FolderDAO {
 
     // Lấy tất cả folder root (ParentFolderID IS NULL) - cho lazy loading
     public List<Folders> getRootFolders() throws SQLException {
-        String sql = "SELECT * FROM Folders WHERE ParentFolderID IS NULL";
+        String sql = "SELECT f.*, " +
+                     "(EXISTS (SELECT 1 FROM Folders fc WHERE fc.ParentFolderID = f.FolderID)) AS hasChildren " +
+                     "FROM Folders f WHERE f.ParentFolderID IS NULL ORDER BY f.FolderName ASC";
         List<Folders> list = new ArrayList<>();
 
         try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
             try (ResultSet rs = stm.executeQuery()) {
                 while (rs.next()) {
                     Timestamp tsLastModified = rs.getTimestamp("LastModified");
-                    list.add(new Folders(
+                    Folders folder = new Folders(
                             rs.getInt("FolderID"),
                             rs.getString("FolderName"),
                             (Integer) rs.getObject("ParentFolderID"),
                             rs.getTimestamp("CreatedAt").toLocalDateTime(),
                             tsLastModified != null ? tsLastModified.toLocalDateTime() : null
-                    ));
+                    );
+                    folder.setHasChildren(rs.getBoolean("hasChildren"));
+                    list.add(folder);
                 }
             }
         }

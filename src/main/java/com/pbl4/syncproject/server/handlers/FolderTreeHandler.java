@@ -58,8 +58,8 @@ public class FolderTreeHandler implements RequestHandler {
                         obj.add("parentFolderId", null);
                     }
                     obj.addProperty("folderName", child.getFolderName());
-                    // Thêm thuộc tính để client biết liệu thư mục này có con hay không
-                    obj.addProperty("hasChildren", folderDAO.hasChildren(child.getFolderId()));
+                    // Sử dụng hasChildren từ đối tượng Folders (đã được query từ SQL)
+                    obj.addProperty("hasChildren", child.getHasChildren());
 
                     if (child.getCreatedAt() != null) {
                         obj.addProperty("createdAt", child.getCreatedAt().toString());

@@ -8,6 +8,7 @@ public class Folders {
     private Integer parentFolderId;
     private LocalDateTime createdAt;
     private LocalDateTime lastModified;
+    private boolean hasChildren;
 
     public Folders() {}
 
@@ -35,4 +36,7 @@ public class Folders {
 
     public LocalDateTime getUpdatedAt() { return lastModified; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.lastModified = updatedAt; }
+
+    public boolean getHasChildren() { return hasChildren; }
+    public void setHasChildren(boolean hasChildren) { this.hasChildren = hasChildren; }
 }

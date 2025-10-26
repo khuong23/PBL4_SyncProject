@@ -304,25 +304,38 @@ public class MainView implements IMainView {
             @Override
             protected void updateItem(Folders item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty || item == null || item.getFolderId() == 0) { // Bỏ qua node placeholder
+                if (empty || item == null) {
                     setText(null);
                     setGraphic(null);
+                    setStyle("");
+                } else if (item.getFolderId() == 0) { 
+                    // Node placeholder - hiển thị với style khác
+                    setText(item.getFolderName());
+                    setGraphic(null);
+                    setStyle("-fx-text-fill: #94a3b8; -fx-font-style: italic;");
                 } else {
                     setText("📁 " + item.getFolderName());
+                    setStyle(""); // Reset style cho các folder thật
 
                     // *** LAZY LOADING: Thêm listener mở rộng cho từng cell ***
                     TreeItem<Folders> treeItem = getTreeItem();
                     if (treeItem != null && treeItem != tv.getRoot()) {
-                        // Nếu chưa từng lắng nghe, thêm listener
+                        // Kiểm tra xem đã quản lý node này chưa
                         if (!loadedChildrenMap.containsKey(treeItem)) {
-                            treeItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
-                                if (newValue) { // Chỉ tải khi mở rộng
-                                    loadChildrenIfNeeded(treeItem);
-                                }
-                            });
-                            // Đánh dấu đã thêm listener và thêm placeholder
-                            loadedChildrenMap.put(treeItem, false); // Chưa tải con
-                            addPlaceholderNode(treeItem);
+                            if (item.getHasChildren()) {
+                                // 1. Nếu CÓ con: Thêm listener và placeholder
+                                treeItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
+                                    if (newValue) { // Chỉ tải khi mở rộng
+                                        loadChildrenIfNeeded(treeItem);
+                                    }
+                                });
+                                loadedChildrenMap.put(treeItem, false); // Đánh dấu chưa tải
+                                addPlaceholderNode(treeItem); // Thêm placeholder để có mũi tên
+                            } else {
+                                // 2. Nếu KHÔNG có con: Đánh dấu là đã tải (vì không có gì để tải)
+                                loadedChildrenMap.put(treeItem, true);
+                                // Không thêm placeholder -> Sẽ không có mũi tên
+                            }
                         }
                     }
                 }
@@ -339,7 +352,7 @@ public class MainView implements IMainView {
             // Tạo một đối tượng Folders giả với ID đặc biệt (0 = placeholder)
             Folders placeholder = new Folders();
             placeholder.setFolderId(0);
-            placeholder.setFolderName("Loading...");
+            placeholder.setFolderName("⏳ Nhấn để tải...");
             item.getChildren().add(new TreeItem<>(placeholder));
         }
     }
@@ -362,8 +375,10 @@ public class MainView implements IMainView {
             System.out.println("🔄 Loading children for: " + parentFolder.getFolderName() + " (ID=" + parentId + ")");
 
             // Hiển thị thông báo đang tải
-            setStatusMessage("⏳ Đang tải thư mục: " + parentFolder.getFolderName() + "...");
+            String loadingMsg = "Đang tải thư mục: " + parentFolder.getFolderName() + "...";
+            setStatusMessage("⏳ " + loadingMsg);
             showLoadingProgress(true);
+            showToast(loadingMsg, "info", 2);
 
             // Đánh dấu là đang tải để tránh gọi lại
             loadedChildrenMap.put(parentItem, true); // Đánh dấu là đã bắt đầu tải (true)
@@ -389,9 +404,13 @@ public class MainView implements IMainView {
                             parentItem.getChildren().add(childItem);
                         }
                         // Hiển thị thông báo thành công
-                        setStatusMessage("✅ Đã tải " + childFolders.size() + " thư mục con từ: " + parentFolder.getFolderName());
+                        String successMsg = "Đã tải " + childFolders.size() + " thư mục từ: " + parentFolder.getFolderName();
+                        setStatusMessage("✅ " + successMsg);
+                        showToast(successMsg, "success", 3);
                     } else {
-                        setStatusMessage("📁 Thư mục " + parentFolder.getFolderName() + " không có thư mục con");
+                        String emptyMsg = "Thư mục '" + parentFolder.getFolderName() + "' không có thư mục con";
+                        setStatusMessage("📁 " + emptyMsg);
+                        showToast(emptyMsg, "info", 2);
                     }
                     showLoadingProgress(false);
                     System.out.println("✅ Loaded " + (childFolders != null ? childFolders.size() : 0) + " children for: " + parentFolder.getFolderName());
@@ -399,8 +418,10 @@ public class MainView implements IMainView {
                 (errorMsg) -> { // onError - Chạy trên UI Thread
                     System.err.println("❌ Error loading children for " + parentFolder.getFolderName() + ": " + errorMsg);
                     // Hiển thị lỗi cho người dùng
-                    setStatusMessage("❌ Lỗi tải thư mục: " + errorMsg);
+                    String errorMessage = "Không thể tải thư mục con của '" + parentFolder.getFolderName() + "'";
+                    setStatusMessage("❌ " + errorMessage);
                     showLoadingProgress(false);
+                    showToast(errorMessage, "error", 4);
                     showAlert("Lỗi Tải Thư Mục", "Không thể tải các thư mục con: " + errorMsg, AlertType.ERROR);
                     // Đặt lại trạng thái để có thể thử tải lại khi click lần nữa
                     loadedChildrenMap.put(parentItem, false);
@@ -852,6 +873,82 @@ public class MainView implements IMainView {
             setSelectedItemsInfo("Không có mục nào được chọn");
         } else {
             setSelectedItemsInfo(selectedCount + " mục được chọn");
+        }
+    }
+
+    /**
+     * Hiển thị thông báo Toast tạm thời (tự động biến mất sau vài giây)
+     * @param message Nội dung thông báo
+     * @param type Loại thông báo: "info", "success", "error", "warning"
+     * @param durationSeconds Thời gian hiển thị (giây)
+     */
+    private void showToast(String message, String type, int durationSeconds) {
+        Platform.runLater(() -> {
+            // Tạo Label cho toast
+            Label toast = new Label(message);
+            toast.setStyle(
+                "-fx-background-color: " + getToastBackgroundColor(type) + ";" +
+                "-fx-text-fill: white;" +
+                "-fx-padding: 10px 20px;" +
+                "-fx-background-radius: 5px;" +
+                "-fx-font-size: 13px;" +
+                "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 10, 0, 0, 2);"
+            );
+            
+            // Thêm icon theo loại
+            String icon = getToastIcon(type);
+            toast.setText(icon + " " + message);
+            
+            // Tạo Stage mới cho toast (popup)
+            Stage toastStage = new Stage();
+            toastStage.initOwner(tableFiles.getScene().getWindow());
+            toastStage.setResizable(false);
+            toastStage.initStyle(javafx.stage.StageStyle.TRANSPARENT);
+            
+            // Tạo scene với background trong suốt
+            javafx.scene.Scene scene = new javafx.scene.Scene(toast);
+            scene.setFill(javafx.scene.paint.Color.TRANSPARENT);
+            toastStage.setScene(scene);
+            
+            // Đặt vị trí toast ở giữa dưới màn hình
+            Stage mainStage = (Stage) tableFiles.getScene().getWindow();
+            toastStage.setX(mainStage.getX() + mainStage.getWidth() / 2 - 150);
+            toastStage.setY(mainStage.getY() + mainStage.getHeight() - 100);
+            
+            toastStage.show();
+            
+            // Tự động đóng sau X giây
+            javafx.animation.PauseTransition delay = new javafx.animation.PauseTransition(
+                javafx.util.Duration.seconds(durationSeconds)
+            );
+            delay.setOnFinished(e -> toastStage.close());
+            delay.play();
+        });
+    }
+    
+    /**
+     * Lấy màu nền cho toast theo loại
+     */
+    private String getToastBackgroundColor(String type) {
+        switch (type.toLowerCase()) {
+            case "success": return "#10b981"; // Green
+            case "error": return "#ef4444"; // Red
+            case "warning": return "#f59e0b"; // Orange
+            case "info":
+            default: return "#3b82f6"; // Blue
+        }
+    }
+    
+    /**
+     * Lấy icon cho toast theo loại
+     */
+    private String getToastIcon(String type) {
+        switch (type.toLowerCase()) {
+            case "success": return "✅";
+            case "error": return "❌";
+            case "warning": return "⚠️";
+            case "info":
+            default: return "ℹ️";
         }
     }
 
