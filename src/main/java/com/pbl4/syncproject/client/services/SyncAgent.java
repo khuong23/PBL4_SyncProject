@@ -16,6 +16,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     private final FileWatcherService fileWatcher;
     private final FileHashService hashService;
     private final NetworkService networkService;
+    @SuppressWarnings("unused")
     private final UploadManager uploadManager;
     private final SyncQueue syncQueue;
     

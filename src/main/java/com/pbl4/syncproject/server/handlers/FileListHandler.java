@@ -7,9 +7,11 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
 import com.pbl4.syncproject.common.model.Files;
+import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.FolderDAO;
 import com.pbl4.syncproject.server.dao.FilesDAO;
 
+import java.sql.Connection;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
@@ -25,13 +27,15 @@ public class FileListHandler implements RequestHandler {
     @Override
     public Response handle(Request request) {
         Response res = new Response();
-        try {
+        try (Connection conn = DatabaseManager.getConnection()) {
+            FolderDAO folderDAO = new FolderDAO(conn);
+            
             JsonObject data = request.getData();
             int folderId = (data != null && data.has("folderId")) ? data.get("folderId").getAsInt() : 1;
             if (folderId == 0) folderId = 1; // ép về root
 
             // Lấy dữ liệu từ DAO (DAO dùng Hikari pool bên trong)
-            List<Folders> childFolders = FolderDAO.getChildren(folderId);
+            List<Folders> childFolders = folderDAO.getChildren(folderId);
             List<Files> filesInFolder  = FilesDAO.getFilesInFolder(folderId);
 
             JsonObject payload = new JsonObject();

@@ -3,7 +3,6 @@ package com.pbl4.syncproject.client.controllers;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
 import javafx.scene.control.*;
-import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
@@ -161,7 +160,6 @@ public class UserPermissionController implements Initializable {
     @FXML
     private void handleApply() {
         String user = cmbUsers.getSelectionModel().getSelectedItem();
-        String filePath = txtFilePath.getText().trim();
 
         if (user == null || user.isEmpty()) {
             showStatus("Vui lòng chọn người dùng!", true);
@@ -239,6 +237,7 @@ public class UserPermissionController implements Initializable {
         return permissions;
     }
 
+    @SuppressWarnings("unused")
     private void applyPermissions(String user, String filePath, List<String> permissions) {
         // In real implementation, this would send permission changes to server
         System.out.println("Applying permissions for user: " + user);

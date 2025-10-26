@@ -3,7 +3,6 @@ package com.pbl4.syncproject.common.storage;
 import java.io.*;
 import java.nio.file.*;
 import java.sql.*;
-import java.util.Objects;
 import java.util.Properties;
 
 public final class StorageManager {

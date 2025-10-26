@@ -49,12 +49,19 @@ public class MainView implements IMainView {
     private TableColumn<FileItem, String> colActions;
 
     // Event Handlers
+    @SuppressWarnings("unused")
     private Runnable onLogout;
+    @SuppressWarnings("unused")
     private Runnable onRefresh;
+    @SuppressWarnings("unused")
     private Runnable onUpload;
+    @SuppressWarnings("unused")
     private Runnable onCreateFolder;
+    @SuppressWarnings("unused")
     private Runnable onPermissions;
+    @SuppressWarnings("unused")
     private Runnable onSettings;
+    @SuppressWarnings("unused")
     private Runnable onSearch;
     private DirectorySelectionHandler onDirectorySelected;
     private FileSelectionHandler onFileSelected;

@@ -139,6 +139,7 @@ public class DownloadFileHandler implements RequestHandler {
     }
 
     // metadata tạm dùng trong handler
+    @SuppressWarnings("unused")
     private static class FileMeta {
         int fileId;
         int folderId;

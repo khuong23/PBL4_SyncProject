@@ -1,8 +1,9 @@
 package com.pbl4.syncproject.client.services;
 
-import com.google.gson.*;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.FileItem;
-import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
 import javafx.collections.FXCollections;
@@ -13,204 +14,144 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * FileService (revised)
- * - Gọi NetworkService.sendRequest(...) để lấy danh sách file / cây thư mục
- * - Không dùng testConnection(), getFileList(), getFolderTree() trên NetworkService
- * - Parser “chịu đựng” khác biệt key / cấu trúc JSON
- * - Giữ nguyên validate & display utils
+ * Service để xử lý file-related operations:
+ * - Parsing JSON responses từ server thành FileItem objects
+ * - File display utilities (icons, types, formatting)
+ * - Data transformation logic
  */
 public class FileService {
 
-    // ======= Điều chỉnh nếu server dùng action/key khác =======
-    private static final String ACTION_LIST_FILES  = "GET_FILE_LIST";
-    private static final String ACTION_FOLDER_TREE = "FOLDER_TREE";
-    private static final String ACTION_DOWNLOAD_FILE = "DOWNLOAD_FILE"; // Action mới
-    private static final String ACTION_DELETE_FILE = "DELETE_FILE"; // Action xóa file
-
-    private static final String KEY_FOLDER_ID     = "folderId";
-    private static final String KEY_FILES         = "files";
-    private static final String KEY_FOLDERS       = "folders";
-
-    // Một số alias/field phổ biến
-    private static final String KEY_ID            = "id";
-    private static final String KEY_FOLDER_ID_ALT = "folderId";
-    private static final String KEY_PARENT_ID     = "parentFolderId";
-    private static final String KEY_NAME          = "name";
-    private static final String KEY_NAME_ALT      = "folderName";
-    private static final String KEY_SIZE          = "size";
-    private static final String KEY_TYPE          = "fileType";
-    private static final String KEY_LAST_MODIFIED = "lastModified";
-    private static final String KEY_CREATED_AT    = "createdAt";
-    private static final String KEY_PERMISSION    = "permission";
-    private static final String KEY_SYNC_STATUS   = "syncStatus";
-    private static final String KEY_FOLDER_NAME   = "folderName"; // tên thư mục chứa (khi parse file)
-
     private final NetworkService networkService;
-    private final String currentUsername;
 
     public FileService(NetworkService networkService) {
-        this(networkService, null);
-    }
-
-    public FileService(NetworkService networkService, String currentUsername) {
         this.networkService = networkService;
-        this.currentUsername = currentUsername;
     }
 
-    // ==========================================================
-    // FETCH APIs
-    // ==========================================================
-
-    /** Lấy & parse toàn bộ danh sách file (server quyết định phạm vi) */
+    /**
+     * Fetch và parse file list từ server (all files)
+     */
     public ObservableList<FileItem> fetchAndParseFileList() throws Exception {
-        JsonObject data = new JsonObject(); // không tham số
-        Response response = networkService.sendRequest(new Request(ACTION_LIST_FILES, data));
-        ensureSuccess(response, "Danh sách tệp (all)");
-        return parseFileListResponse(response);
+        // Test connection first
+        if (!networkService.testConnection()) {
+            throw new Exception("Không thể kết nối tới server - vui lòng khởi động ServerApp");
+        }
+
+        // Get file list from server
+        Response response = networkService.getFileList();
+
+        if (response != null && "success".equals(response.getStatus())) {
+            return parseFileListResponse(response);
+        }
+
+        throw new Exception("Server không trả về dữ liệu hợp lệ");
     }
 
-    /** Lấy & parse danh sách file theo folderId */
+    /**
+     * Fetch và parse file list từ server theo folder ID cụ thể
+     */
     public ObservableList<FileItem> fetchAndParseFileList(int folderId) throws Exception {
-        JsonObject data = new JsonObject();
-        data.addProperty(KEY_FOLDER_ID, folderId);
-        Response response = networkService.sendRequest(new Request(ACTION_LIST_FILES, data));
-        ensureSuccess(response, "Danh sách tệp cho folderId=" + folderId);
-        return parseFileListResponse(response);
+        // Get file list from server for specific folder
+        Response response = networkService.getFileList(folderId);
+
+        if (response != null && "success".equals(response.getStatus())) {
+            return parseFileListResponse(response);
+        }
+
+        throw new Exception("Server không trả về dữ liệu hợp lệ cho folder ID: " + folderId);
     }
 
-    /** Lấy & parse cây thư mục */
+    /**
+     * Fetch and parse folder tree từ server với parentId cụ thể (cho lazy loading)
+     * @param parentId ID của thư mục cha (0 = lấy thư mục gốc)
+     */
+    public List<Folders> fetchAndParseFolderTree(int parentId) throws Exception {
+        Response response = networkService.getFolderTree(parentId);
+
+        if (response != null && "success".equals(response.getStatus())) {
+            List<Folders> folders = parseFoldersFromResponse(response);
+            if (folders != null) { // Không cần kiểm tra !isEmpty() nữa
+                return folders;
+            }
+        }
+        String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
+        throw new Exception("Không có cây thư mục từ server: " + errorMsg);
+    }
+
+    /**
+     * Fetch and parse folder tree từ server (để tương thích ngược)
+     * Nếu server không có root folder (parentId=0), sẽ fallback về default folders
+     */
     public List<Folders> fetchAndParseFolderTree() throws Exception {
-        // Gửi username (nếu có) để server có thể lọc tree theo permission của user hiện tại
-        JsonObject data = null;
-        if (this.currentUsername != null && !this.currentUsername.isBlank()) {
-            data = new JsonObject();
-            data.addProperty("username", this.currentUsername);
-        }
-        Response response = networkService.sendRequest(new Request(ACTION_FOLDER_TREE, data));
-        ensureSuccess(response, "Cây thư mục");
-
-        List<Folders> folders = parseFoldersFromResponse(response);
-        if (folders == null || folders.isEmpty()) {
-            throw new Exception("Cây thư mục rỗng hoặc không hợp lệ từ server.");
-        }
-        return folders;
+        return fetchAndParseFolderTree(0); // Mặc định lấy thư mục gốc
     }
 
-    /** Gửi yêu cầu tải file và trả về Response chứa nội dung base64 */
-    public Response downloadFile(int fileId) throws Exception {
-        if (fileId <= 0) {
-            throw new IllegalArgumentException("File ID không hợp lệ.");
-        }
-        JsonObject data = new JsonObject();
-        data.addProperty("fileId", fileId); // Server hỗ trợ tìm theo fileId
-        Request request = new Request(ACTION_DOWNLOAD_FILE, data);
-        return networkService.sendRequest(request);
-    }
-
-    /** Gửi yêu cầu tải file bằng tên và folderId */
-    public Response downloadFile(int folderId, String fileName) throws Exception {
-        if (folderId <= 0 || fileName == null || fileName.isBlank()) {
-            throw new IllegalArgumentException("Folder ID hoặc File Name không hợp lệ.");
-        }
-        JsonObject data = new JsonObject();
-        data.addProperty("folderId", folderId);
-        data.addProperty("fileName", fileName); // Server hỗ trợ tìm theo cặp này
-        Request request = new Request(ACTION_DOWNLOAD_FILE, data);
-        return networkService.sendRequest(request);
-    }
-
-    /** Gửi yêu cầu xóa file bằng fileId */
-    public Response deleteFile(int fileId) throws Exception {
-        if (fileId <= 0) {
-            throw new IllegalArgumentException("File ID không hợp lệ.");
-        }
-        JsonObject data = new JsonObject();
-        data.addProperty("fileId", fileId);
-        Request request = new Request(ACTION_DELETE_FILE, data);
-        return networkService.sendRequest(request);
-    }
-
-    /** Gửi yêu cầu xóa file bằng tên và folderId */
-    public Response deleteFile(int folderId, String fileName) throws Exception {
-        if (folderId <= 0 || fileName == null || fileName.isBlank()) {
-            throw new IllegalArgumentException("Folder ID hoặc File Name không hợp lệ.");
-        }
-        JsonObject data = new JsonObject();
-        data.addProperty("folderId", folderId);
-        data.addProperty("fileName", fileName);
-        Request request = new Request(ACTION_DELETE_FILE, data);
-        return networkService.sendRequest(request);
-    }
-
-    // ==========================================================
-    // PARSERS
-    // ==========================================================
-
-    /** Đảm bảo status=success; nếu không ném exception + message rõ */
-    private static void ensureSuccess(Response resp, String ctx) throws Exception {
-        if (resp == null) throw new Exception(ctx + " - không có phản hồi từ server");
-        if (!"success".equalsIgnoreCase(resp.getStatus())) {
-            String msg = resp.getMessage() != null ? resp.getMessage() : "unknown error";
-            throw new Exception(ctx + " - server trả về lỗi: " + msg);
-        }
-    }
-
-    /** Parse folders từ Response (chịu được array/object) */
+    /**
+     * Parse folders từ server response
+     */
     public List<Folders> parseFoldersFromResponse(Response response) {
-        List<Folders> out = new ArrayList<>();
+        List<Folders> folders = new ArrayList<>();
+
         try {
             JsonElement datum = response.getData();
-            if (datum == null || datum.isJsonNull()) return out;
+            if (datum == null) return folders;
 
             if (datum.isJsonArray()) {
-                JsonArray arr = datum.getAsJsonArray();
-                for (JsonElement el : arr) {
-                    if (el != null && el.isJsonObject()) {
-                        Folders f = createFolderFromJson(el.getAsJsonObject());
-                        if (f != null) out.add(f);
-                    }
+                // FOLDER_TREE handler may return a raw array
+                JsonArray foldersArray = datum.getAsJsonArray();
+                for (int i = 0; i < foldersArray.size(); i++) {
+                    JsonObject folder = foldersArray.get(i).getAsJsonObject();
+                    Folders folderObj = createFolderFromJson(folder);
+                    if (folderObj != null) folders.add(folderObj);
                 }
             } else if (datum.isJsonObject()) {
                 JsonObject data = datum.getAsJsonObject();
-                if (data.has(KEY_FOLDERS) && data.get(KEY_FOLDERS).isJsonArray()) {
-                    JsonArray arr = data.getAsJsonArray(KEY_FOLDERS);
-                    for (JsonElement el : arr) {
-                        if (el != null && el.isJsonObject()) {
-                            Folders f = createFolderFromJson(el.getAsJsonObject());
-                            if (f != null) out.add(f);
-                        }
+                if (data.has("folders")) {
+                    JsonArray foldersArray = data.getAsJsonArray("folders");
+                    for (int i = 0; i < foldersArray.size(); i++) {
+                        JsonObject folder = foldersArray.get(i).getAsJsonObject();
+                        Folders folderObj = createFolderFromJson(folder);
+                        if (folderObj != null) folders.add(folderObj);
                     }
-                } else {
-                    // fallback: data có thể là 1 folder object
-                    Folders f = createFolderFromJson(data);
-                    if (f != null) out.add(f);
                 }
             }
+
         } catch (Exception e) {
-            System.err.println("Error parsing folders: " + e.getMessage());
+            System.err.println("Error parsing folders from response: " + e.getMessage());
             e.printStackTrace();
         }
-        return out;
+
+        return folders;
     }
 
-    /** Tạo Folders từ JSON (chịu alias key) */
+    /**
+     * Tạo Folders object từ JsonObject
+     */
     private Folders createFolderFromJson(JsonObject json) {
-        if (json == null || json.isJsonNull()) return null;
         try {
-            int id = getInt(json, KEY_FOLDER_ID_ALT, -1);
-            if (id < 0) id = getInt(json, KEY_ID, -1);
+            int id = json.has("folderId") ? json.get("folderId").getAsInt() : json.get("id").getAsInt();
+            String name = json.has("folderName") ? json.get("folderName").getAsString() : json.get("name").getAsString();
+            Integer parentId = json.has("parentFolderId") ? json.get("parentFolderId").getAsInt() : null;
 
-            String name = getString(json, KEY_NAME_ALT, null);
-            if (name == null) name = getString(json, KEY_NAME, null);
+            LocalDateTime createdAt = null;
+            LocalDateTime lastModified = null;
 
-            Integer parentId = json.has(KEY_PARENT_ID) && json.get(KEY_PARENT_ID).isJsonPrimitive()
-                    ? json.get(KEY_PARENT_ID).getAsInt()
-                    : null;
+            // Parse timestamps if available
+            if (json.has("createdAt")) {
+                try {
+                    createdAt = LocalDateTime.parse(json.get("createdAt").getAsString());
+                } catch (Exception e) {
+                    // Ignore parsing errors
+                }
+            }
 
-            LocalDateTime createdAt   = parseDateSafe(getString(json, KEY_CREATED_AT, null));
-            LocalDateTime lastModified= parseDateSafe(getString(json, KEY_LAST_MODIFIED, null));
+            if (json.has("lastModified")) {
+                try {
+                    lastModified = LocalDateTime.parse(json.get("lastModified").getAsString());
+                } catch (Exception e) {
+                    // Ignore parsing errors
+                }
+            }
 
-            if (id <= 0 || name == null) return null;
             return new Folders(id, name, parentId, createdAt, lastModified);
 
         } catch (Exception e) {
@@ -219,141 +160,164 @@ public class FileService {
         }
     }
 
-    /** Parse danh sách FileItem từ Response (chỉ file, không folder) */
+    /**
+     * Parse response từ server thành FileItem objects
+     */
     public ObservableList<FileItem> parseFileListResponse(Response response) {
         ObservableList<FileItem> items = FXCollections.observableArrayList();
+
         try {
-            JsonElement datum = response.getData();
-            if (datum == null || datum.isJsonNull()) return items;
+            JsonObject data = response.getData().getAsJsonObject();
+            if (data == null) return items;
 
-            if (datum.isJsonObject()) {
-                JsonObject data = datum.getAsJsonObject();
+            // Parse folders - chỉ để build tree structure, không add vào file list
+            if (data.has("folders")) {
+                // Folders sẽ được xử lý bởi MainView để build tree structure
+                // Không add vào items list vì user không muốn thấy folder trong file list
+            }
 
-                if (data.has(KEY_FILES) && data.get(KEY_FILES).isJsonArray()) {
-                    JsonArray files = data.getAsJsonArray(KEY_FILES);
-                    for (JsonElement el : files) {
-                        if (el != null && el.isJsonObject()) {
-                            FileItem fi = createFileItemFromJson(el.getAsJsonObject(), false);
-                            if (fi != null) items.add(fi);
-                        }
-                    }
-                } else if (data.entrySet().size() > 0) {
-                    // fallback: 1 file object
-                    FileItem one = createFileItemFromJson(data, false);
-                    if (one != null) items.add(one);
-                }
-            } else if (datum.isJsonArray()) {
-                // fallback: mảng file trực tiếp
-                JsonArray arr = datum.getAsJsonArray();
-                for (JsonElement el : arr) {
-                    if (el != null && el.isJsonObject()) {
-                        FileItem fi = createFileItemFromJson(el.getAsJsonObject(), false);
-                        if (fi != null) items.add(fi);
+            // Parse files - đây là những gì user muốn thấy trong file list  
+            if (data.has("files")) {
+                JsonArray files = data.getAsJsonArray("files");
+                for (int i = 0; i < files.size(); i++) {
+                    JsonObject file = files.get(i).getAsJsonObject();
+                    FileItem fileItem = createFileItemFromJson(file, false); // false = not folder
+                    if (fileItem != null) {
+                        items.add(fileItem);
                     }
                 }
             }
+
         } catch (Exception e) {
             System.err.println("Error parsing file list response: " + e.getMessage());
         }
+
         return items;
     }
 
-    /** Tạo FileItem từ JSON */
+    /**
+     * Tạo FileItem từ JsonObject (data từ database)
+     */
     public FileItem createFileItemFromJson(JsonObject json, boolean isFolder) {
-        if (json == null || json.isJsonNull()) return null;
         try {
-            // Lấy fileId từ JSON (key có thể là "id" hoặc "fileId")
-            int fileId = getInt(json, KEY_ID, -1);
-            if (fileId < 0) fileId = getInt(json, "fileId", -1);
+            String name = json.get("name").getAsString();
+            String size = json.has("size") ? json.get("size").getAsString() : "";
+            String fileType = isFolder ? "Folder" :
+                    (json.has("fileType") ? json.get("fileType").getAsString() : "File");
+            String lastModified = json.has("lastModified") ? json.get("lastModified").getAsString() : "";
+            String permission = json.has("permission") ? json.get("permission").getAsString() : "Đọc/Ghi";
+            String syncStatus = json.has("syncStatus") ? json.get("syncStatus").getAsString() : "✅ Đã đồng bộ";
 
-            String name = getString(json, KEY_NAME, null);
-            if (name == null) name = getString(json, KEY_NAME_ALT, null);
-            if (name == null) return null;
-
-            // size có thể là number hoặc string
-            String sizeStr = "";
-            if (json.has(KEY_SIZE)) {
-                JsonElement se = json.get(KEY_SIZE);
-                if (se.isJsonPrimitive() && se.getAsJsonPrimitive().isNumber()) {
-                    long v = se.getAsLong();
-                    sizeStr = formatFileSize(v);
-                } else if (se.isJsonPrimitive()) {
-                    sizeStr = se.getAsString();
-                }
-            }
-
-            String fileType    = isFolder ? "Folder" : getString(json, KEY_TYPE, "File");
-            String lastMod     = getString(json, KEY_LAST_MODIFIED, "");
-            String permission  = getString(json, KEY_PERMISSION, "Đọc/Ghi");
-            String syncStatus  = getString(json, KEY_SYNC_STATUS, "✅ Đã đồng bộ");
-
+            // Get folder name - for files, it comes from database query
+            // For folders, the name IS the folder name
             String folderName;
             if (isFolder) {
-                folderName = name;
+                folderName = name; // For folders, name = folder name
             } else {
-                folderName = getString(json, KEY_FOLDER_NAME, "shared");
+                // For files, determine folder based on database relationship
+                // Default to "shared" if not specified
+                folderName = json.has("folderName") ? json.get("folderName").getAsString() : "shared";
             }
 
-            String icon        = isFolder ? "📁" : getFileIcon(name);
+            // Add appropriate icon
+            String icon = isFolder ? "📁" : getFileIcon(name);
             String displayName = icon + " " + name;
 
-            FileItem item = new FileItem(displayName, sizeStr, fileType, lastMod, permission, syncStatus, folderName);
-            item.setFileId(fileId); // Gán fileId vào FileItem
-            return item;
+            return new FileItem(displayName, size, fileType, lastModified, permission, syncStatus, folderName);
 
         } catch (Exception e) {
-            System.err.println("Error creating FileItem: " + e.getMessage());
+            System.err.println("Error creating FileItem from JSON: " + e.getMessage());
             return null;
         }
     }
 
-    /** Lọc theo tên thư mục */
+    /**
+     * Filter files theo folder name
+     */
     public ObservableList<FileItem> filterFilesByFolder(ObservableList<FileItem> allFiles, String folderName) {
-        ObservableList<FileItem> filtered = FXCollections.observableArrayList();
-        if (allFiles == null || folderName == null) return filtered;
-        for (FileItem f : allFiles) {
-            if (folderName.equals(f.getFolderName())) filtered.add(f);
+        ObservableList<FileItem> filteredFiles = FXCollections.observableArrayList();
+
+        for (FileItem item : allFiles) {
+            if (item.getFolderName() != null && item.getFolderName().equals(folderName)) {
+                filteredFiles.add(item);
+            }
         }
-        return filtered;
+
+        return filteredFiles;
     }
 
-    // ==========================================================
-    // DISPLAY UTILITIES
-    // ==========================================================
+    // =================================================================
+    // FILE DISPLAY UTILITIES
+    // =================================================================
 
+    /**
+     * Get file icon dựa trên extension
+     */
     public static String getFileIcon(String fileName) {
-        if (fileName != null && fileName.contains(".")) {
-            String ext = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
-            switch (ext) {
-                case "doc": case "docx": case "txt": return "📄";
-                case "xls": case "xlsx":             return "📊";
-                case "png": case "jpg": case "jpeg":
-                case "gif": case "bmp": case "tiff": return "🖼️";
-                case "mp4": case "avi": case "mkv":
-                case "mov": case "wmv":              return "🎥";
-                case "pdf":                           return "📕";
-                default:                              return "📄";
+        if (fileName.contains(".")) {
+            String extension = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
+            switch (extension) {
+                case "doc":
+                case "docx":
+                case "txt":
+                    return "📄";
+                case "xls":
+                case "xlsx":
+                    return "📊";
+                case "png":
+                case "jpg":
+                case "jpeg":
+                case "gif":
+                    return "🖼️";
+                case "mp4":
+                case "avi":
+                case "mkv":
+                    return "🎥";
+                case "pdf":
+                    return "📕";
+                default:
+                    return "📄";
             }
         }
         return "📄";
     }
 
+    /**
+     * Get file type dựa trên extension
+     */
     public static String getFileType(String fileName) {
-        if (fileName != null && fileName.contains(".")) {
-            String ext = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
-            switch (ext) {
-                case "doc": case "docx": return "Document";
-                case "xls": case "xlsx": return "Spreadsheet";
-                case "png": case "jpg": case "jpeg": case "gif": return "Image";
-                case "mp4": case "avi": case "mkv": case "mov": case "wmv": return "Video";
-                case "pdf": return "PDF";
-                case "txt": return "Text";
-                default: return "File";
+        if (fileName.contains(".")) {
+            String extension = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
+            switch (extension) {
+                case "doc":
+                case "docx":
+                    return "Document";
+                case "xls":
+                case "xlsx":
+                    return "Spreadsheet";
+                case "png":
+                case "jpg":
+                case "jpeg":
+                case "gif":
+                    return "Image";
+                case "mp4":
+                case "avi":
+                case "mkv":
+                    return "Video";
+                case "pdf":
+                    return "PDF";
+                case "txt":
+                    return "Text";
+                default:
+                    return "File";
             }
         }
         return "File";
     }
 
+    /**
+     * Format file size in human readable format
+     */
     public static String formatFileSize(long bytes) {
         if (bytes < 1024) return bytes + " B";
         int exp = (int) (Math.log(bytes) / Math.log(1024));
@@ -361,82 +325,67 @@ public class FileService {
         return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
     }
 
-    // ==========================================================
-    // VALIDATION (giữ nguyên API cũ)
-    // ==========================================================
-
+    /**
+     * Validate file trước khi upload
+     */
     public static ValidationResult validateFileForUpload(java.io.File file) {
-        if (file == null || !file.exists()) {
+        // Check if file exists
+        if (!file.exists()) {
             return new ValidationResult(false, "File không tồn tại!");
         }
+
+        // Check if it's a file (not directory)
         if (!file.isFile()) {
             return new ValidationResult(false, "Chỉ có thể tải lên file, không thể tải lên thư mục!");
         }
-        long maxSizeBytes = 100L * 1024 * 1024; // 100MB
+
+        // Check file size (max 100MB)
+        long maxSizeBytes = 100 * 1024 * 1024; // 100MB
         if (file.length() > maxSizeBytes) {
             return new ValidationResult(false,
                     "File quá lớn! Kích thước tối đa cho phép: 100MB\n" +
                             "Kích thước file hiện tại: " + formatFileSize(file.length()));
         }
+
+        // Check filename validity
         String fileName = file.getName();
         if (fileName.trim().isEmpty()) {
             return new ValidationResult(false, "Tên file không hợp lệ!");
         }
+
+        // Check for invalid characters in filename
         String invalidChars = "<>:\"/\\\\|?*";
-        for (int i = 0; i < invalidChars.length(); i++) {
-            char c = invalidChars.charAt(i);
+        for (char c : invalidChars.toCharArray()) {
             if (fileName.indexOf(c) >= 0) {
                 return new ValidationResult(false,
                         "Tên file chứa ký tự không hợp lệ: " + c + "\n" +
                                 "Các ký tự không được phép: " + invalidChars);
             }
         }
+
+        // Check file extension (security)
         String[] blockedExtensions = {".exe", ".bat", ".cmd", ".com", ".scr", ".pif", ".vbs", ".js"};
-        String lower = fileName.toLowerCase();
+        String lowerFileName = fileName.toLowerCase();
         for (String ext : blockedExtensions) {
-            if (lower.endsWith(ext)) {
+            if (lowerFileName.endsWith(ext)) {
                 return new ValidationResult(false,
                         "Loại file này không được phép tải lên vì lý do bảo mật: " + ext);
             }
         }
+
         return new ValidationResult(true, "File hợp lệ");
     }
 
+    /**
+     * Result của file validation
+     */
     public static class ValidationResult {
         public final boolean isValid;
         public final String message;
+
         public ValidationResult(boolean isValid, String message) {
             this.isValid = isValid;
             this.message = message;
         }
-    }
-
-    // ==========================================================
-    // JSON helpers & date parsing
-    // ==========================================================
-
-    private static String getString(JsonObject obj, String key, String def) {
-        if (obj.has(key) && obj.get(key).isJsonPrimitive()) {
-            JsonPrimitive p = obj.getAsJsonPrimitive(key);
-            if (p.isString()) return p.getAsString();
-            if (p.isNumber() || p.isBoolean()) return p.getAsString();
-        }
-        return def;
-    }
-
-    private static int getInt(JsonObject obj, String key, int def) {
-        if (obj.has(key) && obj.get(key).isJsonPrimitive()) {
-            JsonPrimitive p = obj.getAsJsonPrimitive(key);
-            if (p.isNumber()) return p.getAsInt();
-            if (p.isString()) {
-                try { return Integer.parseInt(p.getAsString()); } catch (Exception ignore) {}
-            }
-        }
-        return def;
-    }
-
-    private static LocalDateTime parseDateSafe(String s) {
-        if (s == null || s.isEmpty()) return null;
-        try { return LocalDateTime.parse(s); } catch (Exception ignore) { return null; }
     }
 }

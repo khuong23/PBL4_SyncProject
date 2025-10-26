@@ -1,43 +1,39 @@
 package com.pbl4.syncproject.client.controllers;
 
-import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.FileItem;
-import com.pbl4.syncproject.client.services.*;
+import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.client.services.NetworkService;
+import com.pbl4.syncproject.client.services.SyncAgent;
+import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
-import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.fxml.Initializable;
-import javafx.geometry.Insets;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URL;
-import java.nio.file.Files;
-import java.util.Base64;
 import java.util.List;
-import java.util.Optional;
 import java.util.ResourceBundle;
 
 /**
- * MainController: chỉ điều phối View <-> Services, xử lý sự kiện UI.
- * NetworkService được truyền từ Login (kết nối socket xuyên suốt).
+ * MainController theo nguyên tắc Single Responsibility Principle (SRP)
+ * Chỉ chịu trách nhiệm: Coordinate giữa View và Services, handle UI events
+ * Tất cả business logic được delegate cho các Service classes
  */
 public class MainController implements Initializable {
 
-    // ============ FXML UI Components ============
+    // FXML UI Components
     @FXML private Label lblUserInfo;
     @FXML private Label lblConnectionStatus;
     @FXML private Label lblSyncStatus;
@@ -70,127 +66,125 @@ public class MainController implements Initializable {
     @FXML private TableColumn<FileItem, String> colSyncStatus;
     @FXML private TableColumn<FileItem, String> colActions;
 
-    // ============ Services ============
+    // Services - Single source of truth cho business logic
     private IMainView mainView;
-    private NetworkService networkService; // được inject từ LoginController
+    private NetworkService networkService;
     private FileService fileService;
-    private FolderService folderService;
     private UploadManager uploadManager;
     private SyncAgent syncAgent;
 
-    // ============ State ============
+    // State
+    // THAY ĐỔI: Bỏ biến allFileItems vì chúng ta sẽ không lưu trữ tất cả các file nữa
+    // private ObservableList<FileItem> allFileItems = FXCollections.observableArrayList();
     private String currentUser = "admin";
-    private String serverIp;
-    private int serverPort;
-    private int currentFolderId = -1;
-    private String currentDirectory = "/shared";
+    private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
+    private int currentFolderId = -1; // Track selected folder ID for uploads and operations
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
-        // Chỉ setup UI & handlers. Services sẽ được khởi tạo trong initAfterLogin()
+        // Chỉ initialize view và setup handlers
+        // Services sẽ được khởi tạo sau khi login thành công
         initializeView();
         setupEventHandlers();
-        setupFolderContextMenuAction(); // Gắn action cho ContextMenu của TreeView
+        // loadInitialData() sẽ được gọi sau trong setServerAddress()
     }
 
-    // ========= Inject từ LoginController =========
+    // === INITIALIZATION METHODS ===
 
-    /** Gọi từ LoginController ngay sau khi login thành công */
-    public void setNetworkService(NetworkService ns) {
-        this.networkService = ns; // KHÔNG tạo mới NetworkService ở đây
-    }
+    /**
+     * Set server address from login screen
+     * BẮT BUỘC phải gọi method này từ LoginController sau khi login thành công
+     */
+    public void setServerAddress(String serverIP, int serverPort) {
+        // Initialize services with server address from login
+        networkService = new NetworkService(serverIP, serverPort);
+        fileService = new FileService(networkService);
+        uploadManager = new UploadManager(networkService, mainView);
+        syncAgent = new SyncAgent(networkService, uploadManager);
 
-    /** Gọi từ LoginController để hiển thị IP/Port */
-    public void setServerAddress(String ip, int port) {
-        this.serverIp = ip;
-        this.serverPort = port;
-    }
-
-    /** (Optional) Hiển thị tên người dùng */
-    public void setUsername(String username) {
-        this.currentUser = username != null ? username : "admin";
-    }
-
-    /** Gọi SAU KHI đã set ns + server address (+ username) */
-    public void initAfterLogin() {
-        if (networkService == null) {
-            throw new IllegalStateException("NetworkService chưa được set!");
-        }
-
-        // Khởi tạo services dựa trên kết nối xuyên suốt đã có
-    this.fileService = new FileService(networkService, currentUser);
-        this.folderService = new FolderService(networkService);
-        this.uploadManager = new UploadManager(networkService, mainView);
-        this.syncAgent = new SyncAgent(networkService, uploadManager);
-
-        // Cập nhật UI trạng thái kết nối
+        // Update connection status
         if (mainView != null) {
-            mainView.setUserInfo("User: " + currentUser);
-            mainView.setConnectionStatus("Kết nối: " + serverIp + ":" + serverPort, true);
+            mainView.setConnectionStatus("Kết nối: " + serverIP + ":" + serverPort, true);
             mainView.setNetworkStatus("Mạng: Đã kết nối", true);
 
-            // View cần biết FileService để làm refresh tree
+            // Update FileService trong MainView (sẽ tự động refresh folder tree)
             mainView.setFileService(fileService);
-        }
 
-        // Load dữ liệu ban đầu và khởi động sync
-        loadInitialData();
+            // Now that we have networkService, initialize uploadManager
+            uploadManager = new UploadManager(networkService, mainView);
+
+            // Load initial data sau khi đã có services
+            loadInitialData();
+        }
     }
 
-    // ========= Khởi tạo UI =========
-
+    /**
+     * Initialize MainView wrapper
+     * FileService sẽ được set sau khi login thành công
+     */
     private void initializeView() {
         mainView = new MainView(
-                lblUserInfo,
-                lblConnectionStatus,
-                lblSyncStatus,
-                lblSyncProgress,
-                lblStatusMessage,
-                lblFileCount,
-                lblSelectedItems,
-                lblNetworkStatus,
-                txtSearch,
-                cmbViewMode,
-                cmbSortBy,
-                treeDirectory,
-                progressSync,
-                tableFiles,
-                colFileName,
-                colFileSize,
-                colFileType,
-                colLastModified,
-                colPermissions,
-                colSyncStatus,
-                colActions,
-                null // fileService set sau trong initAfterLogin()
+                lblUserInfo,           // 1
+                lblConnectionStatus,   // 2
+                lblSyncStatus,         // 3
+                lblSyncProgress,       // 4
+                lblStatusMessage,      // 5
+                lblFileCount,          // 6
+                lblSelectedItems,      // 7
+                lblNetworkStatus,      // 8
+                txtSearch,             // 9
+                cmbViewMode,           // 10
+                cmbSortBy,             // 11
+                treeDirectory,         // 12
+                progressSync,          // 13
+                tableFiles,            // 14
+                colFileName,           // 15
+                colFileSize,           // 16
+                colFileType,           // 17
+                colLastModified,       // 18
+                colPermissions,        // 19
+                colSyncStatus,         // 20
+                colActions,            // 21
+                null                   // 22 - fileService sẽ được set sau
         );
 
+        // UploadManager sẽ được khởi tạo sau trong setServerAddress() khi có networkService
+        // uploadManager = new UploadManager(networkService, mainView);
+
+        // Setup TableView columns manually to avoid module access issues
         setupTableColumns();
 
-        // Trạng thái chờ trước login
+        // Setup initial UI state
         mainView.setUserInfo("User: " + currentUser);
         mainView.setStatusMessage("Đang chờ kết nối server...");
         mainView.setConnectionStatus("● Chờ đăng nhập", false);
         mainView.setNetworkStatus("Mạng: Chưa kết nối", false);
     }
 
+    /**
+     * Setup TableView columns manually to avoid JavaFX module access issues
+     */
     private void setupTableColumns() {
-        colFileName.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getFileName()));
-        colFileSize.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getFileSize()));
-        colFileType.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getFileType()));
-        colLastModified.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getLastModified()));
-        colPermissions.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getPermissions()));
-        colSyncStatus.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty(cd.getValue().getSyncStatus()));
-        colActions.setCellValueFactory(cd ->
-                new javafx.beans.property.SimpleStringProperty("Actions"));
+        // Setup cell value factories manually instead of using PropertyValueFactory
+        colFileName.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileName()));
+        colFileSize.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileSize()));
+        colFileType.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getFileType()));
+        colLastModified.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getLastModified()));
+        colPermissions.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getPermissions()));
+        colSyncStatus.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty(cellData.getValue().getSyncStatus()));
+        colActions.setCellValueFactory(cellData ->
+                new javafx.beans.property.SimpleStringProperty("Actions")); // Placeholder for action buttons
     }
 
+    /**
+     * Setup event handlers - delegate to business logic
+     */
     private void setupEventHandlers() {
         mainView.setOnLogout(this::handleLogout);
         mainView.setOnRefresh(this::handleRefresh);
@@ -205,31 +199,179 @@ public class MainController implements Initializable {
         mainView.setOnFileDoubleClick(this::handleFileAction);
     }
 
-    // Gắn action cho ContextMenu của TreeView (sau khi MainView đã tạo ContextMenu)
-    private void setupFolderContextMenuAction() {
-        ContextMenu contextMenu = treeDirectory.getContextMenu();
-        if (contextMenu != null && !contextMenu.getItems().isEmpty()) {
-            MenuItem deleteItem = contextMenu.getItems().stream()
-                    .filter(item -> item.getText().contains("Xóa"))
-                    .findFirst().orElse(null);
-            if (deleteItem != null) {
-                deleteItem.setOnAction(event -> handleDeleteFolder());
-            }
-        }
-    }
-
-    // ========= Sau login =========
-
+    /**
+     * Load initial data and start services
+     */
     private void loadInitialData() {
-        mainView.refreshFolderTree();  // dựa trên fileService
+        // SỬA ĐỔI: Thiết lập cây thư mục với lazy loading
+        setupDirectoryTreeWithLazyLoading();
         startSyncAgent();
         mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
     }
 
+    /**
+     * Thiết lập cây thư mục với lazy loading
+     */
+    private void setupDirectoryTreeWithLazyLoading() {
+        Folders rootFolderData = new Folders();
+        rootFolderData.setFolderId(0); // ID 0 đại diện cho gốc ảo, không có trong DB
+        rootFolderData.setFolderName("Thư mục đồng bộ");
+
+        TreeItem<Folders> rootItem = new TreeItem<>(rootFolderData);
+        rootItem.setExpanded(true);
+        treeDirectory.setRoot(rootItem);
+        treeDirectory.setShowRoot(true);
+
+        treeDirectory.setCellFactory(tv -> new TreeCell<Folders>() {
+            @Override
+            protected void updateItem(Folders item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                } else {
+                    setText("📁 " + item.getFolderName());
+                }
+            }
+        });
+        
+        // Listener để chọn thư mục
+        treeDirectory.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal != null && newVal.getValue() != null) {
+                handleDirectorySelected(newVal.getValue());
+            }
+        });
+        
+        // Tải các thư mục gốc lần đầu
+        loadAndPopulateChildren(treeDirectory.getRoot());
+    }
+
+    /**
+     * Tải và điền các thư mục con cho một TreeItem với lazy loading
+     */
+    private void loadAndPopulateChildren(TreeItem<Folders> parentItem) {
+        // Hiển thị trạng thái đang tải
+        Folders loadingFolder = new Folders();
+        loadingFolder.setFolderId(-1);
+        loadingFolder.setFolderName("Đang tải...");
+        TreeItem<Folders> loadingItem = new TreeItem<>(loadingFolder);
+        parentItem.getChildren().clear();
+        parentItem.getChildren().add(loadingItem);
+
+        TaskWrapper.executeAsync(
+            "Đang tải thư mục...",
+            () -> {
+                try {
+                    // Lấy folderId của parent. Nếu là gốc ảo, ID là 0.
+                    int parentId = parentItem.getValue().getFolderId();
+                    Response response = networkService.getFolderTree(parentId);
+                    if (response != null && "success".equals(response.getStatus())) {
+                        return fileService.parseFoldersFromResponse(response);
+                    }
+                    throw new Exception(response != null ? response.getMessage() : "Lỗi không xác định");
+                } catch (Exception e) {
+                    throw new RuntimeException("Không thể tải cây thư mục: " + e.getMessage(), e);
+                }
+            },
+            (List<Folders> children) -> {
+                // Xóa item "Đang tải..." và thêm các con thực sự
+                parentItem.getChildren().clear();
+                for (Folders folder : children) {
+                    TreeItem<Folders> childItem = createTreeItemWithLazyLoading(folder);
+                    parentItem.getChildren().add(childItem);
+                }
+            },
+            (String error) -> {
+                parentItem.getChildren().clear(); // Xóa "Đang tải..."
+                mainView.showAlert("Lỗi", "Không thể tải danh sách thư mục: " + error, IMainView.AlertType.ERROR);
+            },
+            mainView
+        );
+    }
+    
+    /**
+     * Tạo một TreeItem và thêm listener lazy loading
+     */
+    private TreeItem<Folders> createTreeItemWithLazyLoading(Folders folder) {
+        TreeItem<Folders> item = new TreeItem<>(folder);
+
+        // Thêm listener cho việc mở rộng để lazy load các con
+        item.expandedProperty().addListener((observable, oldValue, newValue) -> {
+            // Nếu item được mở rộng và chưa có con nào được tải
+            if (newValue && item.getChildren().isEmpty()) {
+                loadAndPopulateChildren(item);
+            }
+        });
+
+        return item;
+    }
+
+    // === FILE OPERATIONS ===
+
+    // BỎ: Các phương thức loadFullDataFromServer và onFullDataLoaded không còn cần thiết nữa
+    /*
+    private void loadFullDataFromServer() { ... }
+    private void onFullDataLoaded(List<FileItem> items) { ... }
+    */
+
+    /**
+     * Handle file list loading error
+     */
+    private void onFileListError(String error) {
+        mainView.setStatusMessage("Lỗi: " + error);
+        mainView.showAlert("Lỗi kết nối",
+                "Không thể tải dữ liệu từ server:\\n" + error +
+                        "\\n\\nVui lòng:\\n1. Kiểm tra ServerApp đã chạy\\n2. Kiểm tra kết nối mạng",
+                IMainView.AlertType.ERROR);
+    }
+
+    /**
+     * SỬA ĐỔI: Lấy danh sách tệp cho một thư mục cụ thể từ máy chủ.
+     * @param folderId ID của thư mục cần hiển thị tệp.
+     */
+    private void loadDirectoryFiles(int folderId) {
+        if (fileService == null) {
+            System.err.println("FileService chưa được khởi tạo");
+            return;
+        }
+
+        currentFolderId = folderId; // Cập nhật ID thư mục hiện tại
+
+        TaskWrapper.executeAsync(
+                "Đang tải danh sách tệp cho thư mục '" + currentDirectory + "'...",
+                () -> {
+                    try {
+                        // Gọi API để lấy tệp cho folderId cụ thể
+                        return fileService.fetchAndParseFileList(folderId);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
+                this::onDirectoryFilesLoaded, // Hàm xử lý mới
+                this::onFileListError,
+                mainView
+        );
+    }
+
+    /**
+     * MỚI: Xử lý khi danh sách tệp cho một thư mục được tải thành công.
+     */
+    private void onDirectoryFilesLoaded(List<FileItem> items) {
+        mainView.updateFileList(FXCollections.observableArrayList(items));
+        mainView.setStatusMessage("Thư mục '" + currentDirectory + "': " + items.size() + " mục.");
+    }
+
+    // Thêm phương thức mới này vào MainController.java
+
+    // === SYNC AGENT OPERATIONS ===
+
+    /**
+     * Start sync agent
+     */
     private void startSyncAgent() {
         try {
             String syncDir = System.getProperty("user.home") + File.separator + "SyncFolder";
             syncAgent.start(syncDir);
+            System.out.println("Started sync agent for directory: " + syncDir);
             updateSyncAgentStatus();
         } catch (Exception e) {
             System.err.println("Failed to start sync agent: " + e.getMessage());
@@ -237,78 +379,27 @@ public class MainController implements Initializable {
         }
     }
 
+    /**
+     * Update sync agent status on UI
+     */
     private void updateSyncAgentStatus() {
         if (syncAgent != null) {
-            SyncAgent.SyncStatus st = syncAgent.getStatus();
-            String text = "Auto Sync: " + (st.isRunning ? "Đang chạy" : "Dừng");
-            if (st.isRunning) text += " | Queue: " + st.queueSize + " | Processed: " + st.processedCount;
-            mainView.setSyncStatus(text, st.isRunning);
+            SyncAgent.SyncStatus status = syncAgent.getStatus();
+            String statusText = "Auto Sync: " + (status.isRunning ? "Đang chạy" : "Dừng");
+            if (status.isRunning) {
+                statusText += " | Queue: " + status.queueSize + " | Processed: " + status.processedCount;
+            }
+            mainView.setSyncStatus(statusText, status.isRunning);
         }
     }
 
-    // ========= Directory/File ops =========
-
-    private void loadDirectoryFiles(int folderId) {
-        if (fileService == null) {
-            System.err.println("FileService chưa được khởi tạo");
-            return;
-        }
-        currentFolderId = folderId;
-
-        TaskWrapper.executeAsync(
-                "Đang tải danh sách tệp cho thư mục '" + currentDirectory + "'...",
-                () -> {
-                    try {
-                        return fileService.fetchAndParseFileList(folderId);
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                },
-                this::onDirectoryFilesLoaded,
-                this::onFileListError,
-                mainView
-        );
+    /**
+     * Update general sync status
+     */
+    @SuppressWarnings("unused")
+    private void updateSyncStatus() {
+        mainView.setSyncStatus("Đồng bộ: Hoạt động", true);
     }
-
-    private void onDirectoryFilesLoaded(List<FileItem> items) {
-        mainView.updateFileList(FXCollections.observableArrayList(items));
-        mainView.setStatusMessage("Thư mục '" + currentDirectory + "': " + items.size() + " mục.");
-    }
-
-    private void onFileListError(String error) {
-        mainView.setStatusMessage("Lỗi: " + error);
-        mainView.showAlert("Lỗi kết nối",
-                "Không thể tải dữ liệu từ server:\n" + error +
-                        "\n\nVui lòng:\n1. Kiểm tra ServerApp đã chạy\n2. Kiểm tra kết nối mạng",
-                IMainView.AlertType.ERROR);
-    }
-
-    // ========= Event handlers =========
-
-    private void handleDirectorySelected(Folders folder) {
-        if (folder == null) return;
-        currentFolderId = folder.getFolderId();
-        currentDirectory = folder.getFolderName();
-        loadDirectoryFiles(currentFolderId);
-        mainView.setStatusMessage("Đã chọn thư mục: " + folder.getFolderName());
-    }
-
-    private void handleFileSelected(FileItem fileItem) {
-        mainView.setStatusMessage("Đã chọn file: " + fileItem.getFileName());
-    }
-
-    private void handleFileAction(FileItem fileItem, String action) {
-        switch (action.toLowerCase()) {
-            case "download": downloadFile(fileItem); break;
-            case "edit":     editFile(fileItem);     break;
-            case "delete":   deleteFile(fileItem);   break;
-            default:
-                mainView.showAlert("Lỗi", "Hành động không được hỗ trợ: " + action,
-                        IMainView.AlertType.ERROR);
-        }
-    }
-
-    // ========= Business actions =========
 
     // === EVENT HANDLERS ===
 
@@ -320,127 +411,125 @@ public class MainController implements Initializable {
     @FXML private void handleSettings() { openSettings(); }
     @FXML private void handleSearch() { search(); }
 
-    // Handler cho xóa thư mục từ ContextMenu
-    private void handleDeleteFolder() {
-        Folders selectedFolder = mainView.getSelectedFolder(); // Lấy thư mục đang chọn từ View
-
-        if (selectedFolder == null || selectedFolder.getFolderId() <= 1) { // ID 1 là root
-            mainView.showAlert("Thông báo", "Vui lòng chọn một thư mục (không phải thư mục gốc) để xóa.", IMainView.AlertType.INFORMATION);
+    /**
+     * Handle directory selection
+     */
+    private void handleDirectorySelected(Folders folder) {
+        if (folder == null) {
             return;
         }
+        currentFolderId = folder.getFolderId();
+        currentDirectory = folder.getFolderName(); // Keep for display purposes
+        loadDirectoryFiles(folder.getFolderId());
+        mainView.setStatusMessage("Đã chọn thư mục: " + folder.getFolderName());
+    }
 
-        int folderIdToDelete = selectedFolder.getFolderId();
-        String folderNameToDelete = selectedFolder.getFolderName();
+    /**
+     * Handle file selection
+     */
+    private void handleFileSelected(FileItem fileItem) {
+        mainView.setStatusMessage("Đã chọn file: " + fileItem.getFileName());
+    }
 
-        // Hỏi xác nhận và tùy chọn xóa đệ quy
-        Alert confirmDialog = new Alert(Alert.AlertType.CONFIRMATION);
-        confirmDialog.setTitle("Xác nhận xóa thư mục");
-        confirmDialog.setHeaderText("Bạn có chắc chắn muốn xóa thư mục '" + folderNameToDelete + "'?");
-        confirmDialog.setContentText("Chọn 'Xóa cả nội dung' nếu muốn xóa thư mục này và tất cả file/thư mục con bên trong.");
-
-        // Thêm CheckBox vào Dialog Pane
-        CheckBox recursiveCheckBox = new CheckBox("Xóa cả nội dung bên trong (Đệ quy)");
-        Label warningLabel = new Label("Cảnh báo: Hành động này không thể hoàn tác!");
-        warningLabel.setStyle("-fx-text-fill: red; -fx-font-weight: bold;");
-        VBox content = new VBox(10, recursiveCheckBox, warningLabel);
-        content.setPadding(new Insets(10, 0, 0, 0));
-        confirmDialog.getDialogPane().setContent(content);
-
-        Optional<ButtonType> result = confirmDialog.showAndWait();
-
-        if (result.isPresent() && result.get() == ButtonType.OK) {
-            boolean recursive = recursiveCheckBox.isSelected(); // Lấy trạng thái checkbox
-            mainView.setStatusMessage("Đang xóa thư mục '" + folderNameToDelete + "'...");
-
-            TaskWrapper.executeAsync(
-                "Đang xóa thư mục...",
-                () -> { // Background Task
-                    try {
-                        // Gọi service với folderId và cờ recursive
-                        return folderService.deleteFolder(folderIdToDelete, recursive);
-                    } catch (Exception e) {
-                        throw new RuntimeException("Lỗi khi gửi yêu cầu xóa thư mục: " + e.getMessage(), e);
-                    }
-                },
-                (response) -> { // onSuccess - Chạy trên UI Thread
-                    if ("success".equalsIgnoreCase(response.getStatus())) {
-                        mainView.setStatusMessage("Đã xóa thư mục '" + folderNameToDelete + "'.");
-                        mainView.refreshFolderTree(); // Cập nhật lại cây thư mục
-                        mainView.clearFileListDisplay(); // Xóa sạch danh sách file đang hiển thị
-                        mainView.showAlert("Thành công", response.getMessage() != null ? response.getMessage() : "Xóa thư mục thành công.", IMainView.AlertType.INFORMATION);
-                    } else {
-                        // Hiển thị lỗi từ server (ví dụ: thư mục không rỗng và recursive=false)
-                        String error = response.getMessage() != null ? response.getMessage() : "Không thể xóa thư mục.";
-                        if (response.getData() != null && response.getData().isJsonObject()) {
-                            JsonObject errorData = response.getData().getAsJsonObject();
-                            if (errorData.has("childFolders") || errorData.has("childFiles")) {
-                                error += String.format("\n(Thư mục con: %d, File con: %d)",
-                                        errorData.has("childFolders") ? errorData.get("childFolders").getAsInt() : 0,
-                                        errorData.has("childFiles") ? errorData.get("childFiles").getAsInt() : 0);
-                            }
-                        }
-                        mainView.showAlert("Lỗi Xóa Thư Mục", error, IMainView.AlertType.ERROR);
-                        mainView.setStatusMessage("Xóa thư mục thất bại.");
-                    }
-                },
-                (errorMsg) -> { // onError - Chạy trên UI Thread
-                    mainView.showAlert("Lỗi Xóa Thư Mục", "Xóa thư mục thất bại: " + errorMsg, IMainView.AlertType.ERROR);
-                    mainView.setStatusMessage("Xóa thư mục thất bại.");
-                },
-                mainView // Truyền mainView để TaskWrapper cập nhật UI
-            );
-        } else {
-            mainView.setStatusMessage("Đã hủy thao tác xóa thư mục.");
+    /**
+     * Handle file actions
+     */
+    private void handleFileAction(FileItem fileItem, String action) {
+        switch (action.toLowerCase()) {
+            case "download":
+                downloadFile(fileItem);
+                break;
+            case "edit":
+                editFile(fileItem);
+                break;
+            case "delete":
+                deleteFile(fileItem);
+                break;
+            default:
+                mainView.showAlert("Lỗi", "Hành động không được hỗ trợ: " + action,
+                        IMainView.AlertType.ERROR);
         }
     }
 
+    // === BUSINESS LOGIC METHODS ===
+
+    /**
+     * Logout business logic
+     */
     private void logout() {
         boolean confirmed = mainView.showConfirmDialog(
                 "Xác nhận đăng xuất",
                 "Bạn có chắc chắn muốn đăng xuất không?"
         );
-        if (!confirmed) return;
 
-        try {
-            cleanup();
-            Stage currentStage = (Stage) btnLogout.getScene().getWindow();
+        if (confirmed) {
+            try {
+                cleanup();
 
-            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/login.fxml"));
-            Parent root = loader.load();
+                Stage currentStage = (Stage) btnLogout.getScene().getWindow();
 
-            Stage loginStage = new Stage();
-            loginStage.setTitle("Đăng nhập - File Sync");
-            loginStage.setScene(new Scene(root, 400, 300));
-            loginStage.show();
+                FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/login.fxml"));
+                Parent root = loader.load();
 
-            currentStage.close();
-        } catch (Exception e) {
-            mainView.showAlert("Lỗi", "Không thể đăng xuất: " + e.getMessage(),
-                    IMainView.AlertType.ERROR);
+                Stage loginStage = new Stage();
+                loginStage.setTitle("Đăng nhập - File Sync");
+                loginStage.setScene(new Scene(root, 400, 300));
+                loginStage.show();
+
+                currentStage.close();
+
+            } catch (Exception e) {
+                mainView.showAlert("Lỗi", "Không thể đăng xuất: " + e.getMessage(),
+                        IMainView.AlertType.ERROR);
+            }
         }
     }
 
+    /**
+     * Refresh data
+     */
+// File: src/main/java/com/pbl4/syncproject/client/controllers/MainController.java
+
+    @FXML
     private void refresh() {
-        mainView.refreshFolderTree();
+        // SỬA ĐỔI: Thay vì gọi mainView, controller sẽ tự xử lý việc làm mới
+        // bằng cách gọi lại logic tải cây thư mục gốc.
+        if (treeDirectory.getRoot() != null) {
+            // Gọi lại hàm loadAndPopulateChildren cho thư mục gốc (root)
+            // để xây dựng lại cây từ đầu một cách chính xác.
+            loadAndPopulateChildren(treeDirectory.getRoot());
+        }
+
+        // Tải lại danh sách tệp cho thư mục đang được chọn (nếu có)
         if (currentFolderId > 0) {
             loadDirectoryFiles(currentFolderId);
         } else {
             mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
+            // Xóa danh sách tệp cũ nếu không có thư mục nào được chọn
+            mainView.updateFileList(FXCollections.observableArrayList());
         }
+
+        // Cập nhật các trạng thái khác
         updateSyncAgentStatus();
     }
 
+    /**
+     * Upload file - delegate to UploadManager
+     */
     private void upload() {
-        if (currentFolderId <= 0) {
-            mainView.showAlert("Lỗi Tải Lên",
-                    "Vui lòng chọn một thư mục cụ thể từ cây thư mục bên trái trước khi tải tệp lên!",
-                    IMainView.AlertType.WARNING);
+        // --- BẮT ĐẦU SỬA ĐỔI ---
+        // Kiểm tra xem người dùng đã chọn một thư mục hợp lệ hay chưa.
+        // currentFolderId = 1 là thư mục gốc, chúng ta coi nó là chưa chọn.
+        // Hoặc có thể người dùng chưa chọn gì cả (giá trị vẫn là -1).
+        if (currentFolderId <= 0) { // ID thư mục hợp lệ trong CSDL bắt đầu từ 1.
+            mainView.showAlert("Lỗi Tải Lên", "Vui lòng chọn một thư mục cụ thể từ cây thư mục bên trái trước khi tải tệp lên!", IMainView.AlertType.WARNING);
             return;
         }
+        // --- KẾT THÚC SỬA ĐỔI ---
 
-        FileChooser fc = new FileChooser();
-        fc.setTitle("Chọn file để tải lên");
-        fc.getExtensionFilters().addAll(
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Chọn file để tải lên");
+        fileChooser.getExtensionFilters().addAll(
                 new FileChooser.ExtensionFilter("Tất cả file", "*.*"),
                 new FileChooser.ExtensionFilter("Tài liệu", "*.doc", "*.docx", "*.pdf", "*.txt", "*.rtf"),
                 new FileChooser.ExtensionFilter("Hình ảnh", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.tiff"),
@@ -449,10 +538,12 @@ public class MainController implements Initializable {
                 new FileChooser.ExtensionFilter("Archive", "*.zip", "*.rar", "*.7z", "*.tar", "*.gz")
         );
 
-        File selectedFile = fc.showOpenDialog(btnUpload.getScene().getWindow());
+        File selectedFile = fileChooser.showOpenDialog(btnUpload.getScene().getWindow());
         if (selectedFile != null) {
+            // Gửi ID thư mục hiện tại đã được chọn đến UploadManager
             uploadManager.uploadFile(selectedFile, String.valueOf(currentFolderId), (file, newFileItem, success, message) -> {
                 if (success) {
+                    // Sau khi tải lên thành công, tải lại danh sách tệp cho thư mục hiện tại
                     loadDirectoryFiles(currentFolderId);
                     mainView.setStatusMessage(message);
                 } else {
@@ -462,230 +553,113 @@ public class MainController implements Initializable {
         }
     }
 
+    /**
+     * Create folder business logic
+     */
     private void createFolder() {
         String folderName = mainView.showInputDialog(
                 "Tạo thư mục mới",
                 "Nhập tên thư mục:",
                 "Thư mục mới"
         );
-        if (folderName == null) return;
+
+        if (folderName == null) return; // bấm Cancel
         folderName = folderName.trim();
         if (folderName.isEmpty()) {
             mainView.setStatusMessage("Tên thư mục không được rỗng.");
             return;
         }
 
-        Integer parentId = currentFolderId > 0 ? currentFolderId : null;
+        // Lấy parentId từ UI (nếu không có thì null)
+        Integer parentId = null;
         try {
-            if (parentId == null) {
-                folderService.createFolder(folderName);
-            } else {
-                folderService.createFolder(folderName, parentId);
+            parentId = currentFolderId;
+        } catch (Exception ignore) {
+            // không có selection thì coi như tạo ở root
+        }
+
+        try {
+            if (parentId == null || parentId <= 0) {
+                networkService.createFolder(folderName);
+            }
+            else {
+                networkService.createFolder(folderName, parentId);
             }
         } catch (Exception e) {
             mainView.setStatusMessage("Lỗi gửi yêu cầu tạo thư mục: " + e.getMessage());
         }
     }
 
+    /**
+     * Open permissions window
+     */
     private void openPermissions() {
         openFXMLWindow("/com/pbl4/syncproject/user-permission.fxml",
                 "Quản lý quyền người dùng", 600, 500);
     }
 
+    /**
+     * Open settings window
+     */
     private void openSettings() {
         openFXMLWindow("/com/pbl4/syncproject/settings.fxml",
                 "Cài đặt hệ thống", 600, 500);
     }
 
+    /**
+     * Search business logic
+     */
     private void search() {
         String searchText = mainView.getSearchText();
         if (searchText.trim().isEmpty()) {
             mainView.showAlert("Thông báo", "Vui lòng nhập từ khóa tìm kiếm", IMainView.AlertType.INFORMATION);
             return;
         }
+
         mainView.setStatusMessage("Đang tìm kiếm: " + searchText);
+        // Search logic is handled by the view automatically through text change listener
     }
 
+    /**
+     * Download file
+     */
     private void downloadFile(FileItem fileItem) {
-        if (fileItem == null) {
-            mainView.showAlert("Lỗi", "Chưa chọn file để tải.", IMainView.AlertType.WARNING);
-            return;
-        }
-
-        // Lấy tên file gốc từ tên hiển thị (bỏ icon)
-        String originalFileName = getOriginalFileName(fileItem.getFileName());
-        int currentFolderIdForDownload = this.currentFolderId; // Lấy folderId hiện tại
-
-        if (originalFileName == null || currentFolderIdForDownload <= 0) {
-            mainView.showAlert("Lỗi", "Không thể xác định file cần tải (thiếu tên hoặc thư mục).", IMainView.AlertType.ERROR);
-            return;
-        }
-
-        mainView.setStatusMessage("Đang chuẩn bị tải file '" + originalFileName + "'...");
-        mainView.showDownloadProgress(originalFileName, 0.1); // Bắt đầu hiển thị progress
-
-        TaskWrapper.executeAsync(
-            "Đang tải file...",
-            () -> { // Background Task
-                try {
-                    // Gọi service để lấy nội dung base64
-                    return fileService.downloadFile(currentFolderIdForDownload, originalFileName);
-                } catch (Exception e) {
-                    throw new RuntimeException("Lỗi khi gửi yêu cầu tải: " + e.getMessage(), e);
-                }
-            },
-            (response) -> { // onSuccess - Chạy trên UI Thread
-                if ("success".equalsIgnoreCase(response.getStatus()) && response.getData() != null && response.getData().isJsonObject()) {
-                    JsonObject data = response.getData().getAsJsonObject();
-                    if (data.has("fileContent") && data.has("encoding") && "base64".equals(data.get("encoding").getAsString())) {
-                        String base64Content = data.get("fileContent").getAsString();
-                        String receivedFileName = data.has("fileName") ? data.get("fileName").getAsString() : "downloaded_file";
-
-                        Platform.runLater(() -> { // Đảm bảo chạy trên JavaFX thread cho FileChooser
-                            try {
-                                byte[] fileBytes = Base64.getDecoder().decode(base64Content);
-
-                                // Mở hộp thoại lưu file
-                                FileChooser fileChooser = new FileChooser();
-                                fileChooser.setTitle("Lưu File Tải Về");
-                                fileChooser.setInitialFileName(receivedFileName);
-                                Stage stage = (Stage) tableFiles.getScene().getWindow(); // Lấy stage hiện tại
-                                File saveFile = fileChooser.showSaveDialog(stage);
-
-                                if (saveFile != null) {
-                                    // Lưu file
-                                    Files.write(saveFile.toPath(), fileBytes);
-                                    mainView.hideDownloadProgress();
-                                    mainView.setStatusMessage("Đã tải và lưu file '" + receivedFileName + "' thành công.");
-                                    mainView.showAlert("Thành công", "Đã lưu file '" + saveFile.getName() + "' thành công.", IMainView.AlertType.INFORMATION);
-                                } else {
-                                    mainView.hideDownloadProgress();
-                                    mainView.setStatusMessage("Đã hủy lưu file.");
-                                }
-                            } catch (IllegalArgumentException e) {
-                                mainView.hideDownloadProgress();
-                                mainView.showAlert("Lỗi Dữ Liệu", "Dữ liệu file tải về không hợp lệ (lỗi giải mã Base64).", IMainView.AlertType.ERROR);
-                                mainView.setStatusMessage("Lỗi dữ liệu tải về.");
-                            } catch (IOException e) {
-                                mainView.hideDownloadProgress();
-                                mainView.showAlert("Lỗi Lưu File", "Không thể ghi file xuống đĩa: " + e.getMessage(), IMainView.AlertType.ERROR);
-                                mainView.setStatusMessage("Lỗi lưu file tải về.");
-                            } catch (Exception e) {
-                                mainView.hideDownloadProgress();
-                                mainView.showAlert("Lỗi Không Xác Định", "Đã xảy ra lỗi: " + e.getMessage(), IMainView.AlertType.ERROR);
-                                mainView.setStatusMessage("Lỗi không xác định khi xử lý file.");
-                            }
-                        });
-                    } else {
-                        mainView.hideDownloadProgress();
-                        String error = data.has("message") ? data.get("message").getAsString() : "Server trả về dữ liệu không hợp lệ (thiếu nội dung hoặc sai encoding).";
-                        mainView.showAlert("Lỗi Tải Xuống", error, IMainView.AlertType.ERROR);
-                        mainView.setStatusMessage("Tải file thất bại.");
-                    }
-                } else {
-                    mainView.hideDownloadProgress();
-                    String error = response.getMessage() != null ? response.getMessage() : "Không thể tải file.";
-                    mainView.showAlert("Lỗi Tải Xuống", error, IMainView.AlertType.ERROR);
-                    mainView.setStatusMessage("Tải file thất bại.");
-                }
-            },
-            (errorMsg) -> { // onError - Chạy trên UI Thread
-                mainView.hideDownloadProgress();
-                mainView.showAlert("Lỗi Tải Xuống", "Tải file thất bại: " + errorMsg, IMainView.AlertType.ERROR);
-                mainView.setStatusMessage("Tải file thất bại.");
-            },
-            mainView // Truyền mainView để TaskWrapper cập nhật UI
-        );
+        // TODO: Implement download logic via NetworkService
+        mainView.setStatusMessage("Chức năng download sẽ được implement");
     }
 
-    // Helper để lấy tên file gốc từ tên hiển thị (bỏ icon)
-    private String getOriginalFileName(String displayName) {
-        if (displayName == null) return null;
-        int firstSpace = displayName.indexOf(" ");
-        // Giả định icon nằm trước dấu cách đầu tiên và không quá dài
-        if (firstSpace > 0 && firstSpace < 5) {
-            return displayName.substring(firstSpace + 1).trim();
-        }
-        return displayName.trim(); // Trả về nếu không có dạng icon + tên
-    }
-
+    /**
+     * Edit file
+     */
     private void editFile(FileItem fileItem) {
+        // TODO: Implement edit logic
         mainView.setStatusMessage("Chức năng edit sẽ được implement");
     }
 
+    /**
+     * Delete file
+     */
     private void deleteFile(FileItem fileItem) {
-        if (fileItem == null) {
-            mainView.showAlert("Lỗi", "Chưa chọn file để xóa.", IMainView.AlertType.WARNING);
-            return;
-        }
-
-        String originalFileName = getOriginalFileName(fileItem.getFileName());
-        int currentFolderIdForDelete = this.currentFolderId;
-
-        if (originalFileName == null || currentFolderIdForDelete <= 0) {
-            mainView.showAlert("Lỗi", "Không thể xác định file cần xóa (thiếu tên hoặc thư mục).", IMainView.AlertType.ERROR);
-            return;
-        }
-
-        // Xác nhận trước khi xóa
         boolean confirmed = mainView.showConfirmDialog(
                 "Xác nhận xóa",
-                "Bạn có chắc chắn muốn xóa file: '" + originalFileName + "' không?\nHành động này không thể hoàn tác."
+                "Bạn có chắc chắn muốn xóa file: " + fileItem.getFileName() + "?"
         );
 
-        if (!confirmed) {
-            mainView.setStatusMessage("Đã hủy thao tác xóa.");
-            return;
+        if (confirmed) {
+            // TODO: Implement delete logic via NetworkService
+            mainView.setStatusMessage("Chức năng delete sẽ được implement");
         }
-
-        mainView.setStatusMessage("Đang xóa file '" + originalFileName + "'...");
-
-        TaskWrapper.executeAsync(
-            "Đang xóa file...",
-            () -> { // Background Task
-                try {
-                    // Gọi service để xóa file bằng folderId và fileName
-                    return fileService.deleteFile(currentFolderIdForDelete, originalFileName);
-                } catch (Exception e) {
-                    throw new RuntimeException("Lỗi khi gửi yêu cầu xóa: " + e.getMessage(), e);
-                }
-            },
-            (response) -> { // onSuccess - Chạy trên UI Thread
-                if ("success".equalsIgnoreCase(response.getStatus())) {
-                    mainView.setStatusMessage("Đã xóa file '" + originalFileName + "' thành công.");
-                    // Refresh lại danh sách file trong thư mục hiện tại
-                    loadDirectoryFiles(currentFolderIdForDelete);
-                } else {
-                    // Hiển thị lỗi từ server
-                    String error = response.getMessage() != null ? response.getMessage() : "Không thể xóa file.";
-                    mainView.showAlert("Lỗi Xóa File", error, IMainView.AlertType.ERROR);
-                    mainView.setStatusMessage("Xóa file thất bại.");
-                }
-            },
-            (errorMsg) -> { // onError - Chạy trên UI Thread
-                mainView.showAlert("Lỗi Xóa File", "Xóa file thất bại: " + errorMsg, IMainView.AlertType.ERROR);
-                mainView.setStatusMessage("Xóa file thất bại.");
-            },
-            mainView // Truyền mainView để TaskWrapper cập nhật UI
-        );
     }
 
+    // === UTILITY METHODS ===
+
+    /**
+     * Open FXML window utility
+     */
     private void openFXMLWindow(String fxmlPath, String title, int width, int height) {
         try {
             FXMLLoader loader = new FXMLLoader(getClass().getResource(fxmlPath));
             Parent root = loader.load();
-
-            // Inject services into controller if possible
-            Object controller = loader.getController();
-            try {
-                if (controller instanceof com.pbl4.syncproject.client.controllers.UserPermissionController) {
-                    com.pbl4.syncproject.client.controllers.UserPermissionController upc =
-                            (com.pbl4.syncproject.client.controllers.UserPermissionController) controller;
-                    upc.setNetworkService(this.networkService);
-                    upc.setFileService(this.fileService);
-                    upc.setCurrentUser(this.currentUser);
-                }
-            } catch (Exception ignore) {}
 
             Stage stage = new Stage();
             stage.setTitle(title);
@@ -698,13 +672,13 @@ public class MainController implements Initializable {
         }
     }
 
-    /** Dọn tài nguyên khi logout/đóng app */
+    /**
+     * Cleanup resources
+     */
     public void cleanup() {
         if (syncAgent != null) {
             syncAgent.stop();
-        }
-        if (networkService != null) {
-            networkService.stop(); // đóng socket xuyên suốt
+            System.out.println("Sync agent stopped during cleanup");
         }
     }
 }

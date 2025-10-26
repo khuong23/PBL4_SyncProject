@@ -1,122 +1,83 @@
 package com.pbl4.syncproject.server.handlers;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.common.dispatcher.RequestHandler;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
+import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.FolderDAO;
-import com.pbl4.syncproject.server.dao.UserDAO;
 
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 
-/**
- * Handler trả về cây thư mục con của một folder cho trước.
- * Quy ước: Root folder có ID = 1.
- * - Nếu không gửi parentId hoặc parentId = 0 -> mặc định lấy con của root (1).
- * - Trả về mảng (có thể rỗng) thay vì lỗi khi không có thư mục con.
- */
 public class FolderTreeHandler implements RequestHandler {
 
+    public FolderTreeHandler() {
+        // No-arg constructor - get connection from pool in handle method
+    }
+    
     @Override
     public Response handle(Request req) {
         Response res = new Response();
-        try {
-            JsonObject data = (req != null) ? req.getData() : null;
+        
+        try (Connection conn = DatabaseManager.getConnection()) {
+            FolderDAO folderDAO = new FolderDAO(conn);
+            
+            JsonObject data = req.getData();
+            // SỬA ĐỔI: Nếu không có parentId hoặc parentId <= 0, ta sẽ lấy thư mục gốc.
+            Integer parentId = (data != null && data.has("parentId") && data.get("parentId").getAsInt() > 0)
+                    ? data.get("parentId").getAsInt()
+                    : null;
 
-            int parentId = 1; // mặc định root
-            if (data != null && data.has("parentId")) {
-                try {
-                    parentId = data.get("parentId").getAsInt();
-                } catch (Exception ignore) {
-                    parentId = 1;
-                }
-            }
-            if (parentId == 0) parentId = 1;
-
-            // Lấy danh sách thư mục con (dùng pool bên trong DAO)
-            // Nếu client cung cấp thông tin userId/username thì lọc theo quyền
-            int userId = AuthHelper.getUserIdFromRequest(req);
             List<Folders> children;
-            if (userId > 0 && UserDAO.isAdmin(userId)) {
-                // Admin thấy tất cả
-                children = FolderDAO.getChildren(parentId);
-            } else if (userId > 0) {
-                // Lọc theo quyền (READ)
-                children = FolderDAO.getChildren(parentId, userId);
+            if (parentId == null) {
+                // Lấy các thư mục gốc (ParentFolderID IS NULL)
+                children = folderDAO.getRootFolders();
             } else {
-                // Không có thông tin user -> trả về toàn bộ (fallback)
-                children = FolderDAO.getChildren(parentId);
+                children = folderDAO.getChildren(parentId);
             }
 
-            JsonArray array = new JsonArray();
             if (children != null) {
+                JsonArray array = new JsonArray();
                 for (Folders child : children) {
                     JsonObject obj = new JsonObject();
                     obj.addProperty("folderId", child.getFolderId());
                     if (child.getParentId() != null) {
                         obj.addProperty("parentFolderId", child.getParentId());
                     } else {
-                        obj.add("parentFolderId", JsonNull.INSTANCE);
+                        obj.add("parentFolderId", null);
                     }
                     obj.addProperty("folderName", child.getFolderName());
+                    // Thêm thuộc tính để client biết liệu thư mục này có con hay không
+                    obj.addProperty("hasChildren", folderDAO.hasChildren(child.getFolderId()));
 
-                    // createdAt (có thể null)
                     if (child.getCreatedAt() != null) {
                         obj.addProperty("createdAt", child.getCreatedAt().toString());
                     } else {
-                        obj.add("createdAt", JsonNull.INSTANCE);
+                        obj.add("createdAt", null);
                     }
-
-                    // lastModified (có thể null)
-                    // LƯU Ý: Model Folders nên dùng getLastModified(); nếu bạn đang dùng getUpdatedAt(), đổi lại cho khớp.
                     if (child.getUpdatedAt() != null) {
                         obj.addProperty("lastModified", child.getUpdatedAt().toString());
                     } else {
-                        obj.add("lastModified", JsonNull.INSTANCE);
+                        obj.add("lastModified", null);
                     }
-
                     array.add(obj);
                 }
+                res.setStatus("success");
+                res.setMessage("Folder tree retrieved");
+                res.setData(array);
+            } else {
+                res.setStatus("error");
+                res.setMessage("Could not retrieve children for parentId " + parentId);
             }
-
-            res.setStatus("success");
-            res.setMessage("Folder tree retrieved");
-            res.setData(array);
-            return res;
-
         } catch (SQLException e) {
             e.printStackTrace();
             res.setStatus("error");
-            res.setMessage("DB error: " + e.getMessage());
-            return res;
-        } catch (Exception e) {
-            e.printStackTrace();
-            res.setStatus("error");
-            res.setMessage("Handler error: " + e.getMessage());
-            return res;
+            res.setMessage(e.getMessage());
         }
-    }
-
-    // Helper tạm để lấy userId từ request. Hệ thống xác thực thực tế nên thay bằng cơ chế session/token.
-    private static class AuthHelper {
-        static int getUserIdFromRequest(Request req) {
-            try {
-                if (req == null) return -1;
-                if (req.getData() == null) return -1;
-                if (req.getData().has("userId") && req.getData().get("userId").isJsonPrimitive()) {
-                    return req.getData().get("userId").getAsInt();
-                }
-                if (req.getData().has("username") && req.getData().get("username").isJsonPrimitive()) {
-                    String uname = req.getData().get("username").getAsString();
-                    return UserDAO.getUserIdByUsername(uname);
-                }
-            } catch (Exception ignore) {
-            }
-            return -1;
-        }
+        return res;
     }
 }
