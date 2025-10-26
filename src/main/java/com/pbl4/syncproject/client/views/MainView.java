@@ -317,11 +317,14 @@ public class MainView implements IMainView {
                     setText("📁 " + item.getFolderName());
                     setStyle(""); // Reset style cho các folder thật
 
-                    // *** LAZY LOADING: Thêm listener mở rộng cho từng cell ***
+                    // *** LAZY LOADING: Thêm listener mở rộng cho từng cell (FALLBACK) ***
                     TreeItem<Folders> treeItem = getTreeItem();
                     if (treeItem != null && treeItem != tv.getRoot()) {
                         // Kiểm tra xem đã quản lý node này chưa
                         if (!loadedChildrenMap.containsKey(treeItem)) {
+                            // Debug: In ra hasChildren để kiểm tra
+                            System.out.println("📂 CELLF ACTORY: Folder: " + item.getFolderName() + " | hasChildren: " + item.getHasChildren());
+                            
                             if (item.getHasChildren()) {
                                 // 1. Nếu CÓ con: Thêm listener và placeholder
                                 treeItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
@@ -331,9 +334,11 @@ public class MainView implements IMainView {
                                 });
                                 loadedChildrenMap.put(treeItem, false); // Đánh dấu chưa tải
                                 addPlaceholderNode(treeItem); // Thêm placeholder để có mũi tên
+                                System.out.println("  ✅ [CellFactory] Đã thêm placeholder cho: " + item.getFolderName());
                             } else {
                                 // 2. Nếu KHÔNG có con: Đánh dấu là đã tải (vì không có gì để tải)
                                 loadedChildrenMap.put(treeItem, true);
+                                System.out.println("  ⭕ [CellFactory] Không thêm placeholder cho: " + item.getFolderName() + " (không có con)");
                                 // Không thêm placeholder -> Sẽ không có mũi tên
                             }
                         }
@@ -354,6 +359,9 @@ public class MainView implements IMainView {
             placeholder.setFolderId(0);
             placeholder.setFolderName("⏳ Nhấn để tải...");
             item.getChildren().add(new TreeItem<>(placeholder));
+            System.out.println("    🔸 addPlaceholderNode() được gọi cho: " + item.getValue().getFolderName());
+        } else if (item != null && !item.getChildren().isEmpty()) {
+            System.out.println("    ⚠️ addPlaceholderNode() bị bỏ qua (đã có children): " + item.getValue().getFolderName());
         }
     }
 
@@ -394,13 +402,35 @@ public class MainView implements IMainView {
                     }
                 },
                 (childFolders) -> { // onSuccess - Chạy trên UI Thread
+                    System.out.println("🎯 onSuccess callback được gọi! childFolders size: " + (childFolders != null ? childFolders.size() : "null"));
+                    
                     // Xóa node placeholder "Loading..." trước khi thêm con thật
                     parentItem.getChildren().removeIf(item -> item.getValue().getFolderId() == 0);
 
                     if (childFolders != null && !childFolders.isEmpty()) {
+                        System.out.println("📦 Bắt đầu thêm " + childFolders.size() + " folder con vào tree...");
                         for (Folders child : childFolders) {
                             TreeItem<Folders> childItem = new TreeItem<>(child);
-                            // CellFactory sẽ tự động thêm placeholder và listener khi hiển thị
+                            
+                            // *** QUAN TRỌNG: Thêm logic lazy loading NGAY TẠI ĐÂY ***
+                            // Đánh dấu node này trong map
+                            if (child.getHasChildren()) {
+                                // Folder CÓ con: Thêm listener và placeholder
+                                childItem.expandedProperty().addListener((observable, oldValue, newValue) -> {
+                                    if (newValue) {
+                                        loadChildrenIfNeeded(childItem);
+                                    }
+                                });
+                                loadedChildrenMap.put(childItem, false); // Chưa tải con
+                                addPlaceholderNode(childItem); // Thêm placeholder để có mũi tên
+                                System.out.println("  ✅ Folder CÓ con, đã thêm placeholder: " + child.getFolderName());
+                            } else {
+                                // Folder KHÔNG có con: Đánh dấu đã tải
+                                loadedChildrenMap.put(childItem, true); // Không cần tải gì
+                                System.out.println("  ⭕ Folder KHÔNG có con: " + child.getFolderName());
+                            }
+                            
+                            // Thêm vào tree
                             parentItem.getChildren().add(childItem);
                         }
                         // Hiển thị thông báo thành công

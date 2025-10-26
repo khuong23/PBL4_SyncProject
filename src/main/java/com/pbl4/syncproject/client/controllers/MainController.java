@@ -208,8 +208,9 @@ public class MainController implements Initializable {
      * Load initial data and start services
      */
     private void loadInitialData() {
-        // SỬA ĐỔI: Thiết lập cây thư mục với lazy loading
-        setupDirectoryTreeWithLazyLoading();
+        // SỬA ĐỔI: KHÔNG setup tree ở đây nữa, MainView đã setup rồi
+        // setupDirectoryTreeWithLazyLoading(); // <-- COMMENT ĐI vì MainView đã có setupDirectoryTree()
+        
         startSyncAgent();
         mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
     }
@@ -247,7 +248,7 @@ public class MainController implements Initializable {
         });
         
         // Tải các thư mục gốc lần đầu
-        loadAndPopulateChildren(treeDirectory.getRoot());
+        mainView.refreshFolderTree();
     }
 
     /**
@@ -538,13 +539,10 @@ public class MainController implements Initializable {
 
     @FXML
     private void refresh() {
-        // SỬA ĐỔI: Thay vì gọi mainView, controller sẽ tự xử lý việc làm mới
-        // bằng cách gọi lại logic tải cây thư mục gốc.
-        if (treeDirectory.getRoot() != null) {
-            // Gọi lại hàm loadAndPopulateChildren cho thư mục gốc (root)
-            // để xây dựng lại cây từ đầu một cách chính xác.
-            loadAndPopulateChildren(treeDirectory.getRoot());
-        }
+        System.out.println("🔄 Refresh button clicked - Resetting folder tree with lazy loading...");
+        
+        // Reset folder tree về trạng thái ban đầu (lazy loading)
+        mainView.refreshFolderTree();
 
         // Tải lại danh sách tệp cho thư mục đang được chọn (nếu có)
         if (currentFolderId > 0) {

@@ -156,7 +156,11 @@ public class FileService {
             
             // Parse hasChildren nếu có
             if (json.has("hasChildren")) {
-                folder.setHasChildren(json.get("hasChildren").getAsBoolean());
+                boolean hasChildren = json.get("hasChildren").getAsBoolean();
+                folder.setHasChildren(hasChildren);
+                System.out.println("🔍 Parsed folder: " + name + " | hasChildren: " + hasChildren);
+            } else {
+                System.out.println("⚠️ Folder " + name + " không có field 'hasChildren' trong JSON!");
             }
 
             return folder;
