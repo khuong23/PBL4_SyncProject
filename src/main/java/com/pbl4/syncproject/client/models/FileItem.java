@@ -6,6 +6,7 @@ package com.pbl4.syncproject.client.models;
  */
 public class FileItem {
     private int fileId; // ID thực của file từ database
+    private int folderId; // ID của thư mục chứa file
     private String fileName;
     private String fileSize;
     private String fileType;
@@ -48,6 +49,14 @@ public class FileItem {
 
     public void setFileId(int fileId) {
         this.fileId = fileId;
+    }
+
+    public int getFolderId() {
+        return folderId;
+    }
+
+    public void setFolderId(int folderId) {
+        this.folderId = folderId;
     }
 
     public String getFileName() {

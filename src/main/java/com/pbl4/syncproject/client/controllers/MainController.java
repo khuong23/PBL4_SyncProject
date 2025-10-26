@@ -3,6 +3,7 @@ package com.pbl4.syncproject.client.controllers;
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.client.models.NotificationItem;
 import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.client.services.FolderService;
 import com.pbl4.syncproject.client.services.NetworkService;
 import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
@@ -83,6 +84,7 @@ public class MainController implements Initializable {
     private IMainView mainView;
     private NetworkService networkService;
     private FileService fileService;
+    private FolderService folderService;
     private UploadManager uploadManager;
     private SyncAgent syncAgent;
     private NotificationManager notificationManager;
@@ -124,6 +126,7 @@ public class MainController implements Initializable {
         // Initialize services with server address from login
         networkService = new NetworkService(serverIP, serverPort);
         fileService = new FileService(networkService);
+        folderService = new FolderService(networkService);
         uploadManager = new UploadManager(networkService, mainView);
         syncAgent = new SyncAgent(networkService, uploadManager);
 
@@ -222,6 +225,7 @@ public class MainController implements Initializable {
         mainView.setOnDirectorySelected(this::handleDirectorySelected);
         mainView.setOnFileSelected(this::handleFileSelected);
         mainView.setOnFileDoubleClick(this::handleFileAction);
+        mainView.setOnFolderAction(this::handleFolderAction);
     }
 
     /**
@@ -717,8 +721,86 @@ public class MainController implements Initializable {
         );
 
         if (confirmed) {
-            // TODO: Implement delete logic via NetworkService
-            mainView.setStatusMessage("Chức năng delete sẽ được implement");
+            try {
+                // Gọi NetworkService để xóa file trên server
+                Response response = fileService.deleteFile(
+                    fileItem.getFileId(), 
+                    fileItem.getFolderId(), 
+                    fileItem.getFileName()
+                );
+                
+                if (response != null && "success".equals(response.getStatus())) {
+                    mainView.setStatusMessage("Đã xóa file: " + fileItem.getFileName());
+                    mainView.showAlert("Thành công", "File đã được xóa: " + fileItem.getFileName(), 
+                                     IMainView.AlertType.INFORMATION);
+                    
+                    // Làm mới danh sách file
+                    if (currentFolderId > 0) {
+                        loadDirectoryFiles(currentFolderId);
+                    }
+                } else {
+                    String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
+                    mainView.showAlert("Lỗi", "Không thể xóa file: " + errorMsg, 
+                                     IMainView.AlertType.ERROR);
+                    mainView.setStatusMessage("Lỗi khi xóa file: " + errorMsg);
+                }
+            } catch (Exception e) {
+                mainView.showAlert("Lỗi", "Lỗi khi xóa file: " + e.getMessage(), 
+                                 IMainView.AlertType.ERROR);
+                mainView.setStatusMessage("Lỗi: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Handle folder actions (delete, rename, etc.)
+     */
+    private void handleFolderAction(int folderId, String action) {
+        if ("delete".equalsIgnoreCase(action)) {
+            deleteFolder(folderId);
+        }
+        // Có thể thêm các action khác như rename, move, etc.
+    }
+
+    /**
+     * Delete folder
+     */
+    private void deleteFolder(int folderId) {
+        boolean confirmed = mainView.showConfirmDialog(
+                "Xác nhận xóa thư mục",
+                "Bạn có chắc chắn muốn xóa thư mục này?\n" +
+                "Thư mục sẽ được xóa cùng với tất cả nội dung bên trong (recursive)."
+        );
+
+        if (confirmed) {
+            try {
+                // Gọi FolderService để xóa thư mục trên server (recursive = true)
+                Response response = folderService.deleteFolder(folderId, true);
+                
+                if (response != null && "success".equals(response.getStatus())) {
+                    mainView.setStatusMessage("Đã xóa thư mục thành công");
+                    mainView.showAlert("Thành công", "Thư mục đã được xóa", 
+                                     IMainView.AlertType.INFORMATION);
+                    
+                    // Làm mới cây thư mục
+                    mainView.refreshFolderTree();
+                    
+                    // Xóa danh sách file hiển thị nếu đang xem thư mục bị xóa
+                    if (currentFolderId == folderId) {
+                        mainView.clearFileListDisplay();
+                        currentFolderId = -1;
+                    }
+                } else {
+                    String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
+                    mainView.showAlert("Lỗi", "Không thể xóa thư mục: " + errorMsg, 
+                                     IMainView.AlertType.ERROR);
+                    mainView.setStatusMessage("Lỗi khi xóa thư mục: " + errorMsg);
+                }
+            } catch (Exception e) {
+                mainView.showAlert("Lỗi", "Lỗi khi xóa thư mục: " + e.getMessage(), 
+                                 IMainView.AlertType.ERROR);
+                mainView.setStatusMessage("Lỗi: " + e.getMessage());
+            }
         }
     }
 

@@ -234,7 +234,20 @@ public class FileService {
             String icon = isFolder ? "📁" : getFileIcon(name);
             String displayName = icon + " " + name;
 
-            return new FileItem(displayName, size, fileType, lastModified, permission, syncStatus, folderName);
+            FileItem fileItem = new FileItem(displayName, size, fileType, lastModified, permission, syncStatus, folderName);
+            
+            // Set fileId và folderId từ JSON
+            if (json.has("fileId")) {
+                fileItem.setFileId(json.get("fileId").getAsInt());
+            } else if (json.has("id")) {
+                fileItem.setFileId(json.get("id").getAsInt());
+            }
+            
+            if (json.has("folderId")) {
+                fileItem.setFolderId(json.get("folderId").getAsInt());
+            }
+            
+            return fileItem;
 
         } catch (Exception e) {
             System.err.println("Error creating FileItem from JSON: " + e.getMessage());
@@ -398,5 +411,31 @@ public class FileService {
             this.isValid = isValid;
             this.message = message;
         }
+    }
+
+    /**
+     * Delete file by sending DELETE_FILE request to server
+     * @param fileId ID của file cần xóa
+     * @param folderId ID của thư mục chứa file
+     * @param fileName Tên file cần xóa
+     * @return Response từ server
+     */
+    public Response deleteFile(Integer fileId, Integer folderId, String fileName) throws Exception {
+        JsonObject data = new JsonObject();
+        
+        if (fileId != null && fileId > 0) {
+            data.addProperty("fileId", fileId);
+        }
+        if (folderId != null && folderId > 0) {
+            data.addProperty("folderId", folderId);
+        }
+        if (fileName != null && !fileName.trim().isEmpty()) {
+            data.addProperty("fileName", fileName);
+        }
+        
+        com.pbl4.syncproject.common.jsonhandler.Request request = 
+            new com.pbl4.syncproject.common.jsonhandler.Request("DELETE_FILE", data);
+        
+        return networkService.sendRequest(request);
     }
 }

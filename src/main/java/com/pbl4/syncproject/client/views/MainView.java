@@ -68,6 +68,7 @@ public class MainView implements IMainView {
     private DirectorySelectionHandler onDirectorySelected;
     private FileSelectionHandler onFileSelected;
     private FileActionHandler onFileDoubleClick;
+    private IMainView.FolderActionHandler onFolderAction;
 
     // Data
     private ObservableList<FileItem> originalFileItems = FXCollections.observableArrayList();
@@ -274,6 +275,18 @@ public class MainView implements IMainView {
         // --- Thêm ContextMenu ---
         ContextMenu folderContextMenu = new ContextMenu();
         MenuItem deleteItem = new MenuItem("🗑️ Xóa thư mục");
+        
+        // Thêm setOnAction cho deleteItem
+        deleteItem.setOnAction(event -> {
+            TreeItem<Folders> selectedItem = treeDirectory.getSelectionModel().getSelectedItem();
+            if (selectedItem != null && selectedItem.getValue() != null) {
+                Folders selectedFolder = selectedItem.getValue();
+                if (onFolderAction != null && selectedFolder.getFolderId() > 1) {
+                    onFolderAction.onFolderAction(selectedFolder.getFolderId(), "delete");
+                }
+            }
+        });
+        
         folderContextMenu.getItems().add(deleteItem);
         treeDirectory.setContextMenu(folderContextMenu);
 
@@ -894,6 +907,11 @@ public class MainView implements IMainView {
     @Override
     public void setOnFileDoubleClick(FileActionHandler handler) {
         this.onFileDoubleClick = handler;
+    }
+
+    @Override
+    public void setOnFolderAction(IMainView.FolderActionHandler handler) {
+        this.onFolderAction = handler;
     }
 
     // Private helper methods

@@ -86,6 +86,7 @@ public interface IMainView {
     void setOnDirectorySelected(DirectorySelectionHandler handler);
     void setOnFileSelected(FileSelectionHandler handler);
     void setOnFileDoubleClick(FileActionHandler handler);
+    void setOnFolderAction(FolderActionHandler handler);
 
     // Functional Interfaces for event handling
     @FunctionalInterface
@@ -101,6 +102,11 @@ public interface IMainView {
     @FunctionalInterface
     interface FileActionHandler {
         void onFileAction(FileItem fileItem, String action);
+    }
+
+    @FunctionalInterface
+    interface FolderActionHandler {
+        void onFolderAction(int folderId, String action);
     }
 
     // Alert Type enum
