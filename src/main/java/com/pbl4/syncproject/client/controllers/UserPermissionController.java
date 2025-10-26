@@ -12,6 +12,14 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.ResourceBundle;
+import java.util.HashMap;
+import java.util.Map;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.pbl4.syncproject.client.services.NetworkService;
+import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.common.jsonhandler.Request;
+import com.pbl4.syncproject.common.jsonhandler.Response;
 
 public class UserPermissionController implements Initializable {
 
@@ -32,6 +40,15 @@ public class UserPermissionController implements Initializable {
     @FXML private Button btnReset;
     @FXML private Button btnClose;
 
+    // Injected services
+    private NetworkService networkService;
+    private FileService fileService;
+    private String currentUser;
+
+    // Map username -> userId
+    private final Map<String, Integer> userMap = new HashMap<>();
+    private int selectedFolderId = -1;
+
     @Override
     public void initialize(URL location, ResourceBundle resources) {
         setupUI();
@@ -39,14 +56,13 @@ public class UserPermissionController implements Initializable {
     }
 
     private void setupUI() {
-        // Populate users ComboBox
-        cmbUsers.getItems().addAll("admin", "user1", "user2", "guest");
-
-        // Select first user by default
-        if (!cmbUsers.getItems().isEmpty()) {
-            cmbUsers.getSelectionModel().selectFirst();
+        // Load users from server (if networkService injected) otherwise fallback to sample
+        if (networkService != null) {
+            loadUsersFromServer();
+        } else {
+            cmbUsers.getItems().addAll("admin", "user1", "user2", "guest");
+            if (!cmbUsers.getItems().isEmpty()) cmbUsers.getSelectionModel().selectFirst();
         }
-
         updateCurrentPermissions();
     }
 
@@ -110,13 +126,35 @@ public class UserPermissionController implements Initializable {
     }
 
     private void chooseDirectory() {
-        DirectoryChooser directoryChooser = new DirectoryChooser();
-        directoryChooser.setTitle("Chọn thư mục");
+        // Mở dialog chọn thư mục từ server (sử dụng FileService nếu có)
+        try {
+            List<com.pbl4.syncproject.common.model.Folders> folders = null;
+            if (fileService != null) {
+                folders = fileService.fetchAndParseFolderTree();
+            }
+            if (folders == null || folders.isEmpty()) {
+                showStatus("Không có thư mục từ server để chọn.", true);
+                return;
+            }
 
-        File selectedDirectory = directoryChooser.showDialog(btnBrowse.getScene().getWindow());
-        if (selectedDirectory != null) {
-            txtFilePath.setText(selectedDirectory.getAbsolutePath());
-            showStatus("Đã chọn thư mục: " + selectedDirectory.getName(), false);
+            List<String> names = new ArrayList<>();
+            Map<String, Integer> nameToId = new HashMap<>();
+            for (com.pbl4.syncproject.common.model.Folders f : folders) {
+                names.add(f.getFolderName());
+                nameToId.put(f.getFolderName(), f.getFolderId());
+            }
+            ChoiceDialog<String> dlg = new ChoiceDialog<>(names.get(0), names);
+            dlg.setTitle("Chọn thư mục từ server");
+            dlg.setHeaderText("Chọn thư mục để cấp quyền");
+            dlg.setContentText("Thư mục:");
+            dlg.initOwner(btnBrowse.getScene().getWindow());
+            dlg.showAndWait().ifPresent(chosen -> {
+                txtFilePath.setText(chosen);
+                selectedFolderId = nameToId.getOrDefault(chosen, -1);
+                showStatus("Đã chọn thư mục: " + chosen, false);
+            });
+        } catch (Exception e) {
+            showStatus("Lỗi lấy danh sách thư mục: " + e.getMessage(), true);
         }
     }
 
@@ -130,8 +168,8 @@ public class UserPermissionController implements Initializable {
             return;
         }
 
-        if (filePath.isEmpty()) {
-            showStatus("Vui lòng chọn file hoặc thư mục!", true);
+        if (selectedFolderId <= 0) {
+            showStatus("Vui lòng chọn thư mục (nhấn Browse) để cấp quyền!", true);
             return;
         }
 
@@ -141,10 +179,34 @@ public class UserPermissionController implements Initializable {
             return;
         }
 
-        // Apply permissions (in real implementation, this would send to server)
-        applyPermissions(user, filePath, permissions);
-        showStatus("Đã áp dụng quyền thành công cho " + user, false);
-        updateCurrentPermissions();
+        // Gửi request GRANT_FOLDER_PERMISSION lên server
+        try {
+            Integer targetUserId = userMap.get(user);
+            if (targetUserId == null) {
+                showStatus("Không xác định được userId của người dùng: " + user, true);
+                return;
+            }
+
+            JsonObject data = new JsonObject();
+            data.addProperty("targetUserId", targetUserId);
+            data.addProperty("folderId", selectedFolderId);
+            JsonArray arr = new JsonArray();
+            for (String p : permissions) arr.add(p);
+            data.add("permissions", arr);
+            // Thêm thông tin người gửi để server kiểm tra admin (tạm thời)
+            if (currentUser != null) data.addProperty("username", currentUser);
+
+            Request req = new Request("GRANT_FOLDER_PERMISSION", data);
+            Response resp = networkService.sendRequest(req);
+            if (resp != null && "success".equalsIgnoreCase(resp.getStatus())) {
+                showStatus("Đã áp dụng quyền thành công cho " + user, false);
+            } else {
+                showStatus("Cấp quyền thất bại: " + (resp != null ? resp.getMessage() : "No response"), true);
+            }
+            updateCurrentPermissions();
+        } catch (Exception e) {
+            showStatus("Lỗi khi gửi yêu cầu cấp quyền: " + e.getMessage(), true);
+        }
     }
 
     @FXML
@@ -182,6 +244,39 @@ public class UserPermissionController implements Initializable {
         System.out.println("Applying permissions for user: " + user);
         System.out.println("File/Directory: " + filePath);
         System.out.println("Permissions: " + String.join(", ", permissions));
+    }
+
+    // ======= Injectors ======
+    public void setNetworkService(NetworkService ns) { this.networkService = ns; }
+    public void setFileService(FileService fs) { this.fileService = fs; }
+    public void setCurrentUser(String username) { this.currentUser = username; }
+
+    // Tải danh sách user từ server (GET_USER_LIST)
+    private void loadUsersFromServer() {
+        try {
+            Request req = new Request("GET_USER_LIST", null);
+            Response resp = networkService.sendRequest(req);
+            if (resp != null && "success".equalsIgnoreCase(resp.getStatus()) && resp.getData() != null && resp.getData().isJsonArray()) {
+                cmbUsers.getItems().clear();
+                userMap.clear();
+                for (com.google.gson.JsonElement el : resp.getData().getAsJsonArray()) {
+                    if (el != null && el.isJsonObject()) {
+                        com.google.gson.JsonObject obj = el.getAsJsonObject();
+                        String uname = obj.has("username") ? obj.get("username").getAsString() : null;
+                        int uid = obj.has("userId") ? obj.get("userId").getAsInt() : -1;
+                        if (uname != null) {
+                            cmbUsers.getItems().add(uname);
+                            userMap.put(uname, uid);
+                        }
+                    }
+                }
+                if (!cmbUsers.getItems().isEmpty()) cmbUsers.getSelectionModel().selectFirst();
+            } else {
+                showStatus("Không thể lấy danh sách user từ server.", true);
+            }
+        } catch (Exception e) {
+            showStatus("Lỗi khi lấy user list: " + e.getMessage(), true);
+        }
     }
 
     private void updateCurrentPermissions() {

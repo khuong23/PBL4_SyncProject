@@ -8,6 +8,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
 import com.pbl4.syncproject.server.dao.FolderDAO;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.sql.SQLException;
 import java.util.List;
@@ -37,7 +38,19 @@ public class FolderTreeHandler implements RequestHandler {
             if (parentId == 0) parentId = 1;
 
             // Lấy danh sách thư mục con (dùng pool bên trong DAO)
-            List<Folders> children = FolderDAO.getChildren(parentId);
+            // Nếu client cung cấp thông tin userId/username thì lọc theo quyền
+            int userId = AuthHelper.getUserIdFromRequest(req);
+            List<Folders> children;
+            if (userId > 0 && UserDAO.isAdmin(userId)) {
+                // Admin thấy tất cả
+                children = FolderDAO.getChildren(parentId);
+            } else if (userId > 0) {
+                // Lọc theo quyền (READ)
+                children = FolderDAO.getChildren(parentId, userId);
+            } else {
+                // Không có thông tin user -> trả về toàn bộ (fallback)
+                children = FolderDAO.getChildren(parentId);
+            }
 
             JsonArray array = new JsonArray();
             if (children != null) {
@@ -85,6 +98,25 @@ public class FolderTreeHandler implements RequestHandler {
             res.setStatus("error");
             res.setMessage("Handler error: " + e.getMessage());
             return res;
+        }
+    }
+
+    // Helper tạm để lấy userId từ request. Hệ thống xác thực thực tế nên thay bằng cơ chế session/token.
+    private static class AuthHelper {
+        static int getUserIdFromRequest(Request req) {
+            try {
+                if (req == null) return -1;
+                if (req.getData() == null) return -1;
+                if (req.getData().has("userId") && req.getData().get("userId").isJsonPrimitive()) {
+                    return req.getData().get("userId").getAsInt();
+                }
+                if (req.getData().has("username") && req.getData().get("username").isJsonPrimitive()) {
+                    String uname = req.getData().get("username").getAsString();
+                    return UserDAO.getUserIdByUsername(uname);
+                }
+            } catch (Exception ignore) {
+            }
+            return -1;
         }
     }
 }

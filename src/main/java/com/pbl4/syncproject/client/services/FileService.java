@@ -46,9 +46,15 @@ public class FileService {
     private static final String KEY_FOLDER_NAME   = "folderName"; // tên thư mục chứa (khi parse file)
 
     private final NetworkService networkService;
+    private final String currentUsername;
 
     public FileService(NetworkService networkService) {
+        this(networkService, null);
+    }
+
+    public FileService(NetworkService networkService, String currentUsername) {
         this.networkService = networkService;
+        this.currentUsername = currentUsername;
     }
 
     // ==========================================================
@@ -74,7 +80,13 @@ public class FileService {
 
     /** Lấy & parse cây thư mục */
     public List<Folders> fetchAndParseFolderTree() throws Exception {
-        Response response = networkService.sendRequest(new Request(ACTION_FOLDER_TREE, null));
+        // Gửi username (nếu có) để server có thể lọc tree theo permission của user hiện tại
+        JsonObject data = null;
+        if (this.currentUsername != null && !this.currentUsername.isBlank()) {
+            data = new JsonObject();
+            data.addProperty("username", this.currentUsername);
+        }
+        Response response = networkService.sendRequest(new Request(ACTION_FOLDER_TREE, data));
         ensureSuccess(response, "Cây thư mục");
 
         List<Folders> folders = parseFoldersFromResponse(response);

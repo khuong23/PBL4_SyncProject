@@ -9,10 +9,18 @@ import java.util.List;
 public final class FolderDAO {
 
     private static final String COLS =
-            "FolderID, FolderName, ParentFolderID, CreatedAt, LastModified";
+        "f.FolderID, f.FolderName, f.ParentFolderID, f.CreatedAt, f.LastModified";
 
     private static final String SQL_CHILDREN =
-            "SELECT " + COLS + " FROM Folders WHERE ParentFolderID = ? ORDER BY FolderName ASC";
+        "SELECT " + COLS + " FROM Folders f WHERE f.ParentFolderID = ? ORDER BY f.FolderName ASC";
+
+    // Lấy folder con nhưng chỉ những folder mà userId có quyền READ (trường hợp không phải Admin)
+    private static final String SQL_CHILDREN_WITH_PERMISSION =
+        "SELECT DISTINCT " + COLS + " FROM Folders f " +
+        "INNER JOIN FolderAccessControl fac ON f.FolderID = fac.FolderID " +
+        "AND fac.UserID = ? AND fac.Permission LIKE '%READ%' " +
+        "WHERE f.ParentFolderID = ? " +
+        "ORDER BY f.FolderName ASC";
 
     private static final String SQL_ROOT_ONE =
             "SELECT " + COLS + "FROM Folders WHERE FolderID = 1 LIMIT 1";
@@ -24,6 +32,24 @@ public final class FolderDAO {
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(SQL_CHILDREN)) {
             ps.setInt(1, parentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                List<Folders> out = new ArrayList<>();
+                while (rs.next()) out.add(map(rs));
+                return out;
+            }
+        }
+    }
+
+    /**
+     * Lấy folder con của parentId nhưng lọc theo userId (chỉ trả về folder user có quyền READ)
+     * Nếu userId <= 0 thì trả về danh sách rỗng (caller có thể quyết định gọi method không lọc)
+     */
+    public static List<Folders> getChildren(int parentId, int userId) throws SQLException {
+        if (userId <= 0) return new ArrayList<>();
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(SQL_CHILDREN_WITH_PERMISSION)) {
+            ps.setInt(1, userId);
+            ps.setInt(2, parentId);
             try (ResultSet rs = ps.executeQuery()) {
                 List<Folders> out = new ArrayList<>();
                 while (rs.next()) out.add(map(rs));

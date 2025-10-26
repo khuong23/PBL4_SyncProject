@@ -118,7 +118,7 @@ public class MainController implements Initializable {
         }
 
         // Khởi tạo services dựa trên kết nối xuyên suốt đã có
-        this.fileService = new FileService(networkService);
+    this.fileService = new FileService(networkService, currentUser);
         this.folderService = new FolderService(networkService);
         this.uploadManager = new UploadManager(networkService, mainView);
         this.syncAgent = new SyncAgent(networkService, uploadManager);
@@ -674,6 +674,18 @@ public class MainController implements Initializable {
         try {
             FXMLLoader loader = new FXMLLoader(getClass().getResource(fxmlPath));
             Parent root = loader.load();
+
+            // Inject services into controller if possible
+            Object controller = loader.getController();
+            try {
+                if (controller instanceof com.pbl4.syncproject.client.controllers.UserPermissionController) {
+                    com.pbl4.syncproject.client.controllers.UserPermissionController upc =
+                            (com.pbl4.syncproject.client.controllers.UserPermissionController) controller;
+                    upc.setNetworkService(this.networkService);
+                    upc.setFileService(this.fileService);
+                    upc.setCurrentUser(this.currentUser);
+                }
+            } catch (Exception ignore) {}
 
             Stage stage = new Stage();
             stage.setTitle(title);

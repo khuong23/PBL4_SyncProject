@@ -20,6 +20,9 @@ public class Dispatcher {
         handlers.put("DOWNLOAD_FILE",  new DownloadFileHandler());
         handlers.put("DELETE_FOLDER",  new DeleteFolderHandler());
         handlers.put("DELETE_FILE",  new DeleteFileHandler());
+        handlers.put("DELETE_FILE_BY_PATH", new DeleteFileByPathHandler());
+        handlers.put("GRANT_FOLDER_PERMISSION", new GrantFolderPermissionHandler());
+        handlers.put("GET_USER_LIST", new GetUserListHandler());
 
         // PING: kiểm tra kết nối đơn giản
         handlers.put("PING", req -> {
