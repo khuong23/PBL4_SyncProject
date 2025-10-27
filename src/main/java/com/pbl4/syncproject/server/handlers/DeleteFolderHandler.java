@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -22,12 +23,24 @@ public class DeleteFolderHandler implements RequestHandler {
             if (data == null || !data.has("folderId") || data.get("folderId").isJsonNull()) {
                 return err("Thiếu 'folderId'");
             }
+            
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                return err("Không xác định được người dùng");
+            }
+            
             int folderId = data.get("folderId").getAsInt();
             boolean recursive = data.has("recursive") && !data.get("recursive").isJsonNull()
                     && data.get("recursive").getAsBoolean();
 
             if (folderId == ROOT_ID) return err("Không thể xoá thư mục gốc (ID=1)");
             if (!folderExists(conn, folderId)) return err("Folder không tồn tại (ID=" + folderId + ")");
+
+            // Kiểm tra quyền DELETE trên folder
+            if (!UserDAO.hasFolderPermission(userId, folderId, "DELETE")) {
+                return err("Bạn không có quyền xóa (delete) thư mục này.");
+            }
 
             // Resolve đường dẫn vật lý một lần
             Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, folderId);

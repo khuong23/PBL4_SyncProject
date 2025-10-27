@@ -5,6 +5,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO;
 import com.pbl4.syncproject.common.storage.StorageManager;
 
 import java.nio.file.Files;
@@ -32,6 +33,12 @@ public class UploadFileHandler implements RequestHandler {
                 return error("Thiếu 'fileName' hoặc 'fileContent'");
             }
 
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                return error("Không xác định được người dùng");
+            }
+
             final String rawFileName = data.get("fileName").getAsString();
             final String fileName = StorageManager.sanitizeName(rawFileName);
             if (fileName.isBlank()) return error("Tên file không hợp lệ");
@@ -48,6 +55,11 @@ public class UploadFileHandler implements RequestHandler {
             // Đảm bảo folder tồn tại (đặc biệt là root=1)
             if (!folderExists(connection, folderId)) {
                 return error("Folder không tồn tại (folderId=" + folderId + ")");
+            }
+
+            // Kiểm tra quyền WRITE trên folder
+            if (!UserDAO.hasFolderPermission(userId, folderId, "WRITE")) {
+                return error("Bạn không có quyền ghi (upload) vào thư mục này.");
             }
 
             // Giải mã base64 + kiểm soát kích thước

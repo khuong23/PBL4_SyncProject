@@ -7,6 +7,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,6 +30,12 @@ public class CreateFolderHandler implements RequestHandler {
                 return error("Thiếu 'folderName'");
             }
 
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                return error("Không xác định được người dùng");
+            }
+
             // Sanitize tên
             final String rawName = data.get("folderName").getAsString();
             final String folderName = StorageManager.sanitizeName(rawName);
@@ -49,6 +56,11 @@ public class CreateFolderHandler implements RequestHandler {
             // Kiểm tra parent có tồn tại?
             if (!folderExists(conn, parentId)) {
                 return error("Parent folder không tồn tại (ID=" + parentId + ")");
+            }
+
+            // Kiểm tra quyền WRITE trên folder cha
+            if (!UserDAO.hasFolderPermission(userId, parentId, "WRITE")) {
+                return error("Bạn không có quyền tạo thư mục con trong thư mục này.");
             }
 
             // Kiểm tra trùng tên trong cùng parent

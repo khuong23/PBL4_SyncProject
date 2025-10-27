@@ -8,10 +8,12 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.model.Folders;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.FolderDAO;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class FolderTreeHandler implements RequestHandler {
 
@@ -25,6 +27,14 @@ public class FolderTreeHandler implements RequestHandler {
         
         try (Connection conn = DatabaseManager.getConnection()) {
             FolderDAO folderDAO = new FolderDAO(conn);
+            
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                res.setStatus("error");
+                res.setMessage("Không xác định được người dùng");
+                return res;
+            }
             
             JsonObject data = req.getData();
             // Lấy parentId từ request
@@ -43,13 +53,24 @@ public class FolderTreeHandler implements RequestHandler {
                 // Lấy các thư mục gốc (ParentFolderID IS NULL)
                 children = folderDAO.getRootFolders();
             } else {
+                // Kiểm tra quyền READ trên folder cha trước
+                if (!UserDAO.hasFolderPermission(userId, parentId, "READ")) {
+                    res.setStatus("error");
+                    res.setMessage("Bạn không có quyền xem thư mục này");
+                    return res;
+                }
                 // Lấy các thư mục con của parentId
                 children = folderDAO.getChildren(parentId);
             }
 
-            if (children != null) {
+            // Lọc các folder mà user có quyền READ
+            List<Folders> filteredChildren = children.stream()
+                .filter(folder -> UserDAO.hasFolderPermission(userId, folder.getFolderId(), "READ"))
+                .collect(Collectors.toList());
+
+            if (filteredChildren != null) {
                 JsonArray array = new JsonArray();
-                for (Folders child : children) {
+                for (Folders child : filteredChildren) {
                     JsonObject obj = new JsonObject();
                     obj.addProperty("folderId", child.getFolderId());
                     if (child.getParentId() != null) {

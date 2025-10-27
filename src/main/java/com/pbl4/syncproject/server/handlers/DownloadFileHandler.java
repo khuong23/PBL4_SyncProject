@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,6 +30,12 @@ public class DownloadFileHandler implements RequestHandler {
             JsonObject data = (req != null) ? req.getData() : null;
             if (data == null) return error("Thiếu data");
 
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                return error("Không xác định được người dùng");
+            }
+
             Integer fileId   = data.has("fileId")    && !data.get("fileId").isJsonNull()    ? safeInt(data.get("fileId").getAsString())       : null;
             Integer folderId = data.has("folderId")  && !data.get("folderId").isJsonNull()  ? safeInt(data.get("folderId").getAsString())     : null;
             String  fileName = data.has("fileName")  && !data.get("fileName").isJsonNull()  ? data.get("fileName").getAsString()              : null;
@@ -45,6 +52,11 @@ public class DownloadFileHandler implements RequestHandler {
             }
 
             if (meta == null) return error("Không tìm thấy file.");
+
+            // Kiểm tra quyền READ trên folder chứa file
+            if (!UserDAO.hasFolderPermission(userId, meta.folderId, "READ")) {
+                return error("Bạn không có quyền đọc (download) file trong thư mục này.");
+            }
 
             // Resolve đường dẫn vật lý theo cây Folders
             Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, meta.folderId);

@@ -1,5 +1,6 @@
 package com.pbl4.syncproject.client.controllers;
 
+import javafx.application.Platform;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
 import javafx.scene.control.*;
@@ -14,6 +15,7 @@ import java.util.ResourceBundle;
 import java.util.HashMap;
 import java.util.Map;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.NotificationItem;
 import com.pbl4.syncproject.client.services.NetworkService;
@@ -30,9 +32,7 @@ public class UserPermissionController implements Initializable {
 
     @FXML private CheckBox chkRead;
     @FXML private CheckBox chkWrite;
-    @FXML private CheckBox chkEdit;
     @FXML private CheckBox chkDelete;
-    @FXML private CheckBox chkExecute;
 
     @FXML private TextArea txtCurrentPermissions;
     @FXML private Label lblStatus;
@@ -84,9 +84,7 @@ public class UserPermissionController implements Initializable {
         // Permission checkboxes
         chkRead.selectedProperty().addListener((obs, oldVal, newVal) -> updatePermissionDisplay());
         chkWrite.selectedProperty().addListener((obs, oldVal, newVal) -> updatePermissionDisplay());
-        chkEdit.selectedProperty().addListener((obs, oldVal, newVal) -> updatePermissionDisplay());
         chkDelete.selectedProperty().addListener((obs, oldVal, newVal) -> updatePermissionDisplay());
-        chkExecute.selectedProperty().addListener((obs, oldVal, newVal) -> updatePermissionDisplay());
     }
 
     @FXML
@@ -158,6 +156,7 @@ public class UserPermissionController implements Initializable {
                 txtFilePath.setText(chosen);
                 selectedFolderId = nameToId.getOrDefault(chosen, -1);
                 showStatus("Đã chọn thư mục: " + chosen + " (ID=" + selectedFolderId + ")", false);
+                updateCurrentPermissions(); // Cập nhật quyền sau khi chọn thư mục
             });
         } catch (Exception e) {
             showStatus("Lỗi lấy danh sách thư mục: " + e.getMessage(), true);
@@ -179,10 +178,11 @@ public class UserPermissionController implements Initializable {
         }
 
         List<String> permissions = getSelectedPermissions();
-        if (permissions.isEmpty()) {
-            showStatus("Vui lòng chọn ít nhất một quyền!", true);
-            return;
-        }
+        // Bỏ kiểm tra permissions.isEmpty() để cho phép thu hồi toàn bộ quyền
+        // if (permissions.isEmpty()) {
+        //     showStatus("Vui lòng chọn ít nhất một quyền!", true);
+        //     return;
+        // }
 
         // Gửi request GRANT_FOLDER_PERMISSION lên server
         try {
@@ -225,13 +225,11 @@ public class UserPermissionController implements Initializable {
 
     @FXML
     private void handleReset() {
-        chkRead.setSelected(true);
+        chkRead.setSelected(false);
         chkWrite.setSelected(false);
-        chkEdit.setSelected(false);
         chkDelete.setSelected(false);
-        chkExecute.setSelected(false);
 
-        showStatus("Đã đặt lại quyền về mặc định", false);
+        showStatus("Đã đặt lại các lựa chọn quyền", false);
         updatePermissionDisplay();
     }
 
@@ -246,9 +244,7 @@ public class UserPermissionController implements Initializable {
 
         if (chkRead.isSelected()) permissions.add("READ");
         if (chkWrite.isSelected()) permissions.add("WRITE");
-        if (chkEdit.isSelected()) permissions.add("EDIT");
         if (chkDelete.isSelected()) permissions.add("DELETE");
-        if (chkExecute.isSelected()) permissions.add("EXECUTE");
 
         return permissions;
     }
@@ -305,79 +301,101 @@ public class UserPermissionController implements Initializable {
     }
 
     private void updateCurrentPermissions() {
-        String user = cmbUsers.getSelectionModel().getSelectedItem();
-        String filePath = txtFilePath.getText().trim();
+        String selectedUserName = cmbUsers.getSelectionModel().getSelectedItem();
+        String selectedFolderPath = txtFilePath.getText().trim(); // Tên thư mục đang hiển thị
 
-        if (user == null || filePath.isEmpty()) {
-            txtCurrentPermissions.setText("Chưa có thông tin quyền");
+        // Chỉ thực hiện khi đã chọn user và thư mục hợp lệ (có folderId)
+        if (selectedUserName == null || selectedFolderPath.isEmpty() || selectedFolderId <= 0 || networkService == null) {
+            txtCurrentPermissions.setText("Vui lòng chọn người dùng và thư mục hợp lệ.");
+            // Đặt lại các checkbox về trạng thái mặc định
+            resetCheckboxesToDefault();
             return;
         }
 
-        // Kiểm tra có kết nối server không
-        if (networkService == null || selectedFolderId <= 0) {
-            txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
-                                        "File/Thư mục: " + filePath + "\n" +
-                                        "Quyền hiện tại: Chưa kết nối server hoặc chưa chọn thư mục");
+        Integer targetUserId = userMap.get(selectedUserName);
+        if (targetUserId == null) {
+            txtCurrentPermissions.setText("Không tìm thấy ID cho người dùng: " + selectedUserName);
+            resetCheckboxesToDefault();
             return;
         }
 
-        // Lấy quyền thực tế từ server
-        try {
-            Integer targetUserId = userMap.get(user);
-            if (targetUserId == null || targetUserId <= 0) {
-                txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
-                                            "File/Thư mục: " + filePath + "\n" +
-                                            "Quyền hiện tại: Không xác định được userId");
-                return;
+        // Tạo request để lấy quyền hiện tại
+        JsonObject requestData = new JsonObject();
+        requestData.addProperty("userId", targetUserId);
+        requestData.addProperty("folderId", selectedFolderId);
+        Request getPermsRequest = new Request("GET_FOLDER_PERMISSIONS", requestData);
+
+        // Hiển thị tạm thời là đang tải
+        txtCurrentPermissions.setText("Đang tải quyền hiện tại...");
+        resetCheckboxesToDefault(); // Reset trước khi load
+
+        // Gọi API bất đồng bộ
+        new Thread(() -> {
+            try {
+                Response response = networkService.sendRequest(getPermsRequest);
+                Platform.runLater(() -> { // Cập nhật UI trên JavaFX thread
+                    if (response != null && "success".equals(response.getStatus()) && response.getData() != null && response.getData().isJsonObject()) {
+                        JsonObject responseData = response.getData().getAsJsonObject();
+                        JsonArray permsArray = responseData.has("permissions") 
+                            ? responseData.getAsJsonArray("permissions") 
+                            : new JsonArray();
+                        
+                        List<String> currentPermsList = new ArrayList<>();
+                        StringBuilder permsText = new StringBuilder("Người dùng: " + selectedUserName + "\n");
+                        permsText.append("Thư mục: ").append(selectedFolderPath).append("\n");
+                        permsText.append("Quyền hiện tại:\n");
+
+                        // Bỏ chọn tất cả checkbox trước
+                        chkRead.setSelected(false);
+                        chkWrite.setSelected(false);
+                        chkDelete.setSelected(false);
+
+                        if (permsArray.size() == 0) {
+                            permsText.append("- Không có quyền nào.");
+                        } else {
+                            for (JsonElement permElement : permsArray) {
+                                String perm = permElement.getAsString();
+                                currentPermsList.add(perm);
+                                permsText.append("- ").append(perm).append(": Có\n");
+                                // Tự động check vào ô tương ứng
+                                switch (perm.toUpperCase()) {
+                                    case "READ":
+                                        chkRead.setSelected(true);
+                                        break;
+                                    case "WRITE":
+                                        chkWrite.setSelected(true);
+                                        break;
+                                    case "DELETE":
+                                        chkDelete.setSelected(true);
+                                        break;
+                                }
+                            }
+                        }
+                        txtCurrentPermissions.setText(permsText.toString());
+                        updatePermissionDisplay(); // Cập nhật label trạng thái chọn
+
+                    } else {
+                        String errorMsg = (response != null && response.getMessage() != null) ? response.getMessage() : "Không thể lấy quyền.";
+                        txtCurrentPermissions.setText("Lỗi: " + errorMsg);
+                        resetCheckboxesToDefault();
+                    }
+                });
+            } catch (Exception e) {
+                Platform.runLater(() -> {
+                    txtCurrentPermissions.setText("Lỗi kết nối khi lấy quyền: " + e.getMessage());
+                    resetCheckboxesToDefault();
+                    e.printStackTrace();
+                });
             }
+        }).start();
+    }
 
-            // Gửi request GET_FOLDER_PERMISSIONS
-            JsonObject data = new JsonObject();
-            data.addProperty("userId", targetUserId);
-            data.addProperty("folderId", selectedFolderId);
-
-            Request req = new Request("GET_FOLDER_PERMISSIONS", data);
-            Response resp = networkService.sendRequest(req);
-
-            StringBuilder currentPerms = new StringBuilder();
-            currentPerms.append("Người dùng: ").append(user).append("\n");
-            currentPerms.append("File/Thư mục: ").append(filePath).append("\n");
-            currentPerms.append("Quyền hiện tại:\n");
-
-            if (resp != null && "success".equalsIgnoreCase(resp.getStatus()) && resp.getData() != null) {
-                JsonObject responseData = resp.getData().getAsJsonObject();
-                JsonArray permissions = responseData.has("permissions") 
-                    ? responseData.getAsJsonArray("permissions") 
-                    : new JsonArray();
-
-                // Convert permissions to Set for easier checking
-                java.util.Set<String> permSet = new java.util.HashSet<>();
-                for (com.google.gson.JsonElement elem : permissions) {
-                    permSet.add(elem.getAsString().toUpperCase());
-                }
-
-                // Display permissions
-                currentPerms.append("- Đọc (READ): ").append(permSet.contains("READ") ? "Có" : "Không").append("\n");
-                currentPerms.append("- Ghi (WRITE): ").append(permSet.contains("WRITE") ? "Có" : "Không").append("\n");
-                currentPerms.append("- Xóa (DELETE): ").append(permSet.contains("DELETE") ? "Có" : "Không").append("\n");
-                
-                // Note: EDIT and EXECUTE are not in database schema, so we show them as not available
-                currentPerms.append("\nGhi chú: Hệ thống hiện chỉ hỗ trợ quyền READ, WRITE và DELETE");
-
-            } else {
-                currentPerms.append("Không thể lấy thông tin quyền từ server.\n");
-                if (resp != null) {
-                    currentPerms.append("Lỗi: ").append(resp.getMessage());
-                }
-            }
-
-            txtCurrentPermissions.setText(currentPerms.toString());
-
-        } catch (Exception e) {
-            txtCurrentPermissions.setText("Người dùng: " + user + "\n" +
-                                        "File/Thư mục: " + filePath + "\n" +
-                                        "Quyền hiện tại: Lỗi khi truy vấn - " + e.getMessage());
-        }
+    // Hàm phụ trợ để reset checkbox
+    private void resetCheckboxesToDefault() {
+        chkRead.setSelected(false); // Không chọn mặc định
+        chkWrite.setSelected(false);
+        chkDelete.setSelected(false);
+        updatePermissionDisplay();
     }
 
     private void updatePermissionDisplay() {

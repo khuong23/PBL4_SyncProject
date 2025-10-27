@@ -51,7 +51,7 @@
         </Label>
         
         <VBox spacing="8" style="-fx-background-color: #f9fafb; -fx-background-radius: 8; -fx-padding: 15;">
-            <CheckBox fx:id="chkRead" text="Đọc (Read)" selected="true">
+            <CheckBox fx:id="chkRead" text="Đọc (Read)" selected="false">
                 <font>
                     <Font name="Segoe UI" size="12" />
                 </font>
@@ -61,17 +61,7 @@
                     <Font name="Segoe UI" size="12" />
                 </font>
             </CheckBox>
-            <CheckBox fx:id="chkEdit" text="Sửa đổi (Edit)">
-                <font>
-                    <Font name="Segoe UI" size="12" />
-                </font>
-            </CheckBox>
             <CheckBox fx:id="chkDelete" text="Xóa (Delete)">
-                <font>
-                    <Font name="Segoe UI" size="12" />
-                </font>
-            </CheckBox>
-            <CheckBox fx:id="chkExecute" text="Thực thi (Execute)">
                 <font>
                     <Font name="Segoe UI" size="12" />
                 </font>

@@ -10,10 +10,12 @@ import com.pbl4.syncproject.common.model.Files;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.FolderDAO;
 import com.pbl4.syncproject.server.dao.FilesDAO;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.sql.Connection;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Handler lấy danh sách files/folders từ DB.
@@ -34,12 +36,32 @@ public class FileListHandler implements RequestHandler {
             int folderId = (data != null && data.has("folderId")) ? data.get("folderId").getAsInt() : 1;
             if (folderId == 0) folderId = 1; // ép về root
 
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(request);
+            if (userId <= 0) {
+                res.setStatus("error");
+                res.setMessage("Không xác định được người dùng");
+                return res;
+            }
+
+            // Kiểm tra quyền READ trên folder hiện tại
+            if (!UserDAO.hasFolderPermission(userId, folderId, "READ")) {
+                res.setStatus("error");
+                res.setMessage("Bạn không có quyền xem thư mục này");
+                return res;
+            }
+
             // Lấy dữ liệu từ DAO (DAO dùng Hikari pool bên trong)
             List<Folders> childFolders = folderDAO.getChildren(folderId);
             List<Files> filesInFolder  = FilesDAO.getFilesInFolder(folderId);
 
+            // Lọc các folder con mà user có quyền READ
+            List<Folders> filteredFolders = childFolders.stream()
+                .filter(folder -> UserDAO.hasFolderPermission(userId, folder.getFolderId(), "READ"))
+                .collect(Collectors.toList());
+
             JsonObject payload = new JsonObject();
-            payload.add("folders", toJsonFolders(childFolders));
+            payload.add("folders", toJsonFolders(filteredFolders));
             payload.add("files",   toJsonFiles(filesInFolder));
 
             res.setStatus("success");

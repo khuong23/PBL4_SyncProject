@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +19,12 @@ public class DeleteFileHandler implements RequestHandler {
         try (Connection conn = DatabaseManager.getConnection()) {
             JsonObject data = (req != null) ? req.getData() : null;
             if (data == null) return err("Thiếu data");
+
+            // Lấy userId để kiểm tra quyền
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                return err("Không xác định được người dùng");
+            }
 
             Integer fileId   = (data.has("fileId")   && !data.get("fileId").isJsonNull())   ? safeInt(data.get("fileId").getAsString()) : null;
             Integer folderId = (data.has("folderId") && !data.get("folderId").isJsonNull()) ? safeInt(data.get("folderId").getAsString()) : null;
@@ -32,6 +39,11 @@ public class DeleteFileHandler implements RequestHandler {
                 return err("Cần 'fileId' hoặc ('folderId' + 'fileName').");
             }
             if (meta == null) return err("Không tìm thấy file.");
+
+            // Kiểm tra quyền DELETE trên folder chứa file
+            if (!UserDAO.hasFolderPermission(userId, meta.folderId, "DELETE")) {
+                return err("Bạn không có quyền xóa (delete) file trong thư mục này.");
+            }
 
             // Xoá trên đĩa (nếu có)
             Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, meta.folderId);
