@@ -54,7 +54,8 @@ public class FolderTreeHandler implements RequestHandler {
                 children = folderDAO.getRootFolders();
             } else {
                 // Kiểm tra quyền READ trên folder cha trước
-                if (!UserDAO.hasFolderPermission(userId, parentId, "READ")) {
+                // Ngoại lệ: Root folder (ID=1) luôn được phép xem để user có thể điều hướng
+                if (parentId != 1 && !UserDAO.hasFolderPermission(userId, parentId, "READ")) {
                     res.setStatus("error");
                     res.setMessage("Bạn không có quyền xem thư mục này");
                     return res;
