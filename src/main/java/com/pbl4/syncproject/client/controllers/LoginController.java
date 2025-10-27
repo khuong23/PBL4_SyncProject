@@ -106,10 +106,10 @@ public class LoginController {
                     FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/pbl4/syncproject/main-refactored.fxml"));
                     Parent root = loader.load();
 
-                    // Get MainController và set server address
+                    // Get MainController và set server address với username
                     MainController mainController = loader.getController();
                     if (mainController != null) {
-                        mainController.setServerAddress(ip, port);
+                        mainController.setServerAddress(ip, port, username);
                     }
 
                     Stage mainStage = new Stage();

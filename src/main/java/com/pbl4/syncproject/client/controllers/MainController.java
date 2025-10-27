@@ -95,7 +95,7 @@ public class MainController implements Initializable {
     // State
     // THAY ĐỔI: Bỏ biến allFileItems vì chúng ta sẽ không lưu trữ tất cả các file nữa
     // private ObservableList<FileItem> allFileItems = FXCollections.observableArrayList();
-    private String currentUser = "admin";
+    private String currentUser = null; // Sẽ được set từ LoginController sau khi đăng nhập
     private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
     private int currentFolderId = -1; // Track selected folder ID for uploads and operations
     
@@ -119,10 +119,13 @@ public class MainController implements Initializable {
     // === INITIALIZATION METHODS ===
 
     /**
-     * Set server address from login screen
+     * Set server address and username from login screen
      * BẮT BUỘC phải gọi method này từ LoginController sau khi login thành công
      */
-    public void setServerAddress(String serverIP, int serverPort) {
+    public void setServerAddress(String serverIP, int serverPort, String username) {
+        // Lưu username từ login
+        this.currentUser = username;
+        
         // Initialize services with server address from login
         networkService = new NetworkService(serverIP, serverPort);
         networkService.setCurrentUsername(currentUser); // Set username cho NetworkService
@@ -135,6 +138,7 @@ public class MainController implements Initializable {
         if (mainView != null) {
             mainView.setConnectionStatus("Kết nối: " + serverIP + ":" + serverPort, true);
             mainView.setNetworkStatus("Mạng: Đã kết nối", true);
+            mainView.setUserInfo("User: " + currentUser); // Cập nhật tên user trên UI
 
             // Update FileService trong MainView (sẽ tự động refresh folder tree)
             mainView.setFileService(fileService);
@@ -145,6 +149,15 @@ public class MainController implements Initializable {
             // Load initial data sau khi đã có services
             loadInitialData();
         }
+    }
+    
+    /**
+     * Deprecated: Sử dụng setServerAddress(serverIP, serverPort, username) thay thế
+     * Method này giữ lại để tương thích ngược
+     */
+    @Deprecated
+    public void setServerAddress(String serverIP, int serverPort) {
+        setServerAddress(serverIP, serverPort, "guest"); // Default username nếu không truyền
     }
 
     /**
