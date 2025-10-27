@@ -19,6 +19,7 @@ public class NetworkService {
 
     private String serverIP;
     private int serverPort;
+    private String currentUsername; // Username để gửi kèm trong mọi request
 
     /**
      * Constructor - PHẢI set server address sau khi tạo object
@@ -27,6 +28,7 @@ public class NetworkService {
         // Không set default IP/port - phải được set từ login
         this.serverIP = null;
         this.serverPort = 0;
+        this.currentUsername = null;
     }
 
     /**
@@ -35,6 +37,7 @@ public class NetworkService {
     public NetworkService(String serverIP, int serverPort) {
         this.serverIP = serverIP;
         this.serverPort = serverPort;
+        this.currentUsername = null;
     }
 
     /**
@@ -44,6 +47,30 @@ public class NetworkService {
         this.serverIP = serverIP;
         this.serverPort = serverPort;
         System.out.println("📍 NetworkService configured: " + serverIP + ":" + serverPort);
+    }
+
+    /**
+     * Set current username (gọi sau khi login thành công)
+     */
+    public void setCurrentUsername(String username) {
+        this.currentUsername = username;
+        System.out.println("👤 NetworkService username set: " + username);
+    }
+
+    /**
+     * Get current username
+     */
+    public String getCurrentUsername() {
+        return this.currentUsername;
+    }
+
+    /**
+     * Helper method: Thêm username vào JsonObject data nếu có
+     */
+    private void addUsernameToData(JsonObject data) {
+        if (currentUsername != null && !currentUsername.isBlank()) {
+            data.addProperty("username", currentUsername);
+        }
     }
 
     /**
@@ -106,6 +133,7 @@ public class NetworkService {
             data.addProperty("folderId", folderId);
             data.addProperty("fileSize", file.length());
             data.addProperty("lastModified", file.lastModified());
+            addUsernameToData(data); // Thêm username vào request
 
             Request request = new Request("UPLOAD_FILE", data);
 
@@ -136,6 +164,7 @@ public class NetworkService {
 
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
+        addUsernameToData(data); // Thêm username vào request
 
         Request request = new Request("GET_FILE_LIST", data);
         return sendRequest(request);
@@ -157,6 +186,7 @@ public class NetworkService {
         JsonObject data = new JsonObject();
         data.addProperty("folderName", folderName);
         data.addProperty("parentFolderId", parentFolderId);
+        addUsernameToData(data); // Thêm username vào request
 
         Request request = new Request("CREATE_FOLDER", data);
         return sendRequest(request);
@@ -180,6 +210,7 @@ public class NetworkService {
         // parentId = 0: lấy root folders (ParentFolderID IS NULL)
         // parentId = 1: lấy children của root folder
         data.addProperty("parentId", parentId);
+        addUsernameToData(data); // Thêm username vào request
         Request request = new Request("FOLDER_TREE", data);
         return sendRequest(request);
     }
@@ -201,6 +232,7 @@ public class NetworkService {
         JsonObject data = new JsonObject();
         data.addProperty("fileName", fileName);
         data.addProperty("folderId", folderId);
+        addUsernameToData(data); // Thêm username vào request
 
         Request request = new Request("DOWNLOAD", data);
         return sendRequest(request);

@@ -125,6 +125,7 @@ public class MainController implements Initializable {
     public void setServerAddress(String serverIP, int serverPort) {
         // Initialize services with server address from login
         networkService = new NetworkService(serverIP, serverPort);
+        networkService.setCurrentUsername(currentUser); // Set username cho NetworkService
         fileService = new FileService(networkService);
         folderService = new FolderService(networkService);
         uploadManager = new UploadManager(networkService, mainView);
