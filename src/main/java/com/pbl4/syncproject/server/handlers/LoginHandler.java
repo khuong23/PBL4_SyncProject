@@ -26,8 +26,17 @@ public class LoginHandler implements RequestHandler {
             boolean ok = UserDAO.checkLogin(username, password);
 
             if (ok) {
+                // Lấy userId để trả về cho client
+                int userId = UserDAO.getUserIdByUsername(username);
+                
+                JsonObject responseData = new JsonObject();
+                responseData.addProperty("userId", userId);
+                responseData.addProperty("username", username);
+                responseData.addProperty("isAdmin", UserDAO.isAdmin(userId));
+                
                 res.setStatus("success");
                 res.setMessage("Login successful");
+                res.setData(responseData);
             } else {
                 res.setStatus("error");
                 res.setMessage("Invalid username or password");
