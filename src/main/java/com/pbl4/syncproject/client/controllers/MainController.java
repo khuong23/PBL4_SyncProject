@@ -892,6 +892,20 @@ public class MainController implements Initializable {
             FXMLLoader loader = new FXMLLoader(getClass().getResource(fxmlPath));
             Parent root = loader.load();
 
+            // Lấy controller sau khi load FXML
+            Object controller = loader.getController();
+
+            // Kiểm tra và inject service nếu là UserPermissionController
+            if (controller instanceof UserPermissionController) {
+                UserPermissionController permController = (UserPermissionController) controller;
+                permController.setNetworkService(this.networkService); // Truyền networkService
+                permController.setFileService(this.fileService);       // Truyền fileService
+                permController.setCurrentUser(this.currentUser);       // Truyền currentUser
+                // Sau khi inject service, gọi lại setupUI để load dữ liệu từ server
+                permController.reinitializeWithServices();
+            }
+            // Có thể thêm tương tự cho SettingsController nếu cần
+
             Stage stage = new Stage();
             stage.setTitle(title);
             stage.setScene(new Scene(root, width, height));
@@ -900,6 +914,7 @@ public class MainController implements Initializable {
         } catch (Exception e) {
             mainView.showAlert("Lỗi", "Không thể mở cửa sổ: " + e.getMessage(),
                     IMainView.AlertType.ERROR);
+            e.printStackTrace(); // In lỗi ra console để debug
         }
     }
 

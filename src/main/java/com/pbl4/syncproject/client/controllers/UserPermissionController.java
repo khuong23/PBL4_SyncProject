@@ -134,7 +134,9 @@ public class UserPermissionController implements Initializable {
         try {
             List<com.pbl4.syncproject.common.model.Folders> folders = null;
             if (fileService != null) {
-                folders = fileService.fetchAndParseFolderTree();
+                // Lấy các thư mục con của root (parentId=1) thay vì root itself
+                // Điều này sẽ trả về: documents, images, shared, videos, etc.
+                folders = fileService.fetchAndParseFolderTree(1); // parentId=1 (root)
             }
             if (folders == null || folders.isEmpty()) {
                 showStatus("Không có thư mục từ server để chọn.", true);
@@ -155,7 +157,7 @@ public class UserPermissionController implements Initializable {
             dlg.showAndWait().ifPresent(chosen -> {
                 txtFilePath.setText(chosen);
                 selectedFolderId = nameToId.getOrDefault(chosen, -1);
-                showStatus("Đã chọn thư mục: " + chosen, false);
+                showStatus("Đã chọn thư mục: " + chosen + " (ID=" + selectedFolderId + ")", false);
             });
         } catch (Exception e) {
             showStatus("Lỗi lấy danh sách thư mục: " + e.getMessage(), true);
@@ -263,6 +265,16 @@ public class UserPermissionController implements Initializable {
     public void setNetworkService(NetworkService ns) { this.networkService = ns; }
     public void setFileService(FileService fs) { this.fileService = fs; }
     public void setCurrentUser(String username) { this.currentUser = username; }
+
+    /**
+     * Gọi phương thức này sau khi inject các service để load lại dữ liệu từ server
+     */
+    public void reinitializeWithServices() {
+        if (networkService != null) {
+            loadUsersFromServer();
+            updateCurrentPermissions();
+        }
+    }
 
     // Tải danh sách user từ server (GET_USER_LIST)
     private void loadUsersFromServer() {
