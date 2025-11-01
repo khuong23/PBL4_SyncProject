@@ -11,6 +11,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.Base64;
 
 /**
@@ -67,14 +68,35 @@ public class DownloadService {
     }
 
     private void updateFileCacheAfterDownload(FileItem item, String localPath, String serverHash) throws Exception {
-        String sql = "INSERT OR REPLACE INTO Files (FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
+        // FileItem contains server IDs, we need to find or create local FolderID
+        int serverFolderId = item.getFolderId();
+        Integer localFolderId = null;
+        
+        // Find local FolderID by ServerFolderID
+        String sqlFindFolder = "SELECT FolderID FROM Folders WHERE ServerFolderID = ?";
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sqlFindFolder)) {
+            ps.setInt(1, serverFolderId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                localFolderId = rs.getInt("FolderID");
+            }
+        }
+        
+        if (localFolderId == null) {
+            System.err.println("⚠️ Không tìm thấy FolderID local cho ServerFolderID=" + serverFolderId);
+            // TODO: Có thể cần tạo folder cục bộ trước khi download file
+            return;
+        }
+        
+        String sql = "INSERT OR REPLACE INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
                 + "VALUES (?, ?, ?, ?, ?, ?, 'SYNCED')";
 
         try (Connection conn = localDbManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
-            ps.setInt(1, item.getFileId());
-            ps.setInt(2, item.getFolderId());
+            ps.setInt(1, item.getFileId()); // Server FileID → ServerFileID column
+            ps.setInt(2, localFolderId);    // Local FolderID
             String originalName = item.getFileName();
             if (originalName.contains(" ")) originalName = originalName.substring(originalName.indexOf(' ') + 1).trim();
             ps.setString(3, originalName);

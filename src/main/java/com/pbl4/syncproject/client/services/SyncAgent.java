@@ -202,7 +202,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         
         // Tạo folder mới trong database
         String folderName = folderPath.getFileName().toString();
-        String sqlInsert = "INSERT INTO Folders (ParentFolderID, FolderName, LocalPath, SyncStatus) VALUES (?, ?, ?, 'LOCAL_CREATED')";
+        String sqlInsert = "INSERT INTO Folders (ParentFolderID, FolderName, LocalPath, SyncStatus, ServerFolderID) VALUES (?, ?, ?, 'LOCAL_CREATED', NULL)";
         
         try (PreparedStatement ps = conn.prepareStatement(sqlInsert, PreparedStatement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, parentFolderId);
@@ -620,26 +620,26 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         String lastKnownHash = null; // Hash gốc
 
         try (Connection conn = localDbManager.getConnection()) {
-            // --- Lấy FolderID từ bảng Folders dựa trên đường dẫn folder cha ---
+            // --- Lấy ServerFolderID từ bảng Folders dựa trên đường dẫn folder cha ---
             Path filePath = Paths.get(task.localPath);
             if (filePath.getParent() != null) {
                 String parentLocalPath = filePath.getParent().toString().replace("\\", "/");
                 
-                // Tìm FolderID của folder cha trong bảng Folders
-                String sqlFolder = "SELECT FolderID, SyncStatus FROM Folders WHERE LocalPath = ?";
+                // Tìm ServerFolderID của folder cha trong bảng Folders
+                String sqlFolder = "SELECT ServerFolderID, SyncStatus FROM Folders WHERE LocalPath = ?";
                 try (PreparedStatement psFolder = conn.prepareStatement(sqlFolder)) {
                     psFolder.setString(1, parentLocalPath);
                     ResultSet rsFolder = psFolder.executeQuery();
                     if (rsFolder.next()) {
-                        int foundFolderId = rsFolder.getInt("FolderID");
+                        Integer foundServerFolderId = rsFolder.getObject("ServerFolderID", Integer.class);
                         String syncStatus = rsFolder.getString("SyncStatus");
                         
                         // Kiểm tra xem folder đã được sync chưa
-                        if ("SYNCED".equals(syncStatus) && foundFolderId > 0) {
-                            folderId = foundFolderId;
-                            System.out.println("📂 Tìm thấy FolderID=" + folderId + " cho folder: " + parentLocalPath);
+                        if ("SYNCED".equals(syncStatus) && foundServerFolderId != null && foundServerFolderId > 0) {
+                            folderId = foundServerFolderId; // Lấy ID của Server
+                            System.out.println("📂 Tìm thấy ServerFolderID=" + folderId + " cho folder: " + parentLocalPath);
                         } else {
-                            System.err.println("⚠️ Folder chưa được sync với server: " + parentLocalPath + " (status=" + syncStatus + ", id=" + foundFolderId + ")");
+                            System.err.println("⚠️ Folder chưa được sync với server: " + parentLocalPath + " (status=" + syncStatus + ", serverFolderId=" + foundServerFolderId + ")");
                             return false; // Retry sau khi folder được sync
                         }
                     } else {
@@ -697,19 +697,19 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         Response response = networkService.createFolder(task.targetName, task.targetParentID);
         
         if ("success".equals(response.getStatus())) {
-            // Lấy FolderID mới từ server
+            // Lấy ServerFolderID từ server
             JsonObject data = response.getData().getAsJsonObject();
             int serverFolderId = data.get("folderId").getAsInt();
             
-            // Cập nhật FolderID trong local database
-            String sqlUpdate = "UPDATE Folders SET FolderID = ?, SyncStatus = 'SYNCED' WHERE LocalPath = ?";
+            // --- THAY ĐỔI QUAN TRỌNG: Cập nhật ServerFolderID, KHÔNG phải FolderID (PK) ---
+            String sqlUpdate = "UPDATE Folders SET ServerFolderID = ?, SyncStatus = 'SYNCED' WHERE LocalPath = ?";
             try (PreparedStatement ps = conn.prepareStatement(sqlUpdate)) {
                 ps.setInt(1, serverFolderId);
                 ps.setString(2, task.localPath);
                 ps.executeUpdate();
             }
             
-            System.out.println("✅ Folder đã được tạo trên server với ID=" + serverFolderId);
+            System.out.println("✅ Folder đã được tạo trên server (ServerID=" + serverFolderId + ") và cache đã được cập nhật.");
             return true;
             
         } else if ("error".equals(response.getStatus()) && 
@@ -730,17 +730,17 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     JsonObject folder = folders.get(i).getAsJsonObject();
                     String folderName = folder.get("folderName").getAsString();
                     if (task.targetName.equals(folderName)) {
-                        int existingFolderId = folder.get("folderId").getAsInt();
+                        int existingServerFolderId = folder.get("folderId").getAsInt();
                         
-                        // Cập nhật FolderID trong local database
-                        String sqlUpdate = "UPDATE Folders SET FolderID = ?, SyncStatus = 'SYNCED' WHERE LocalPath = ?";
+                        // Cập nhật ServerFolderID trong local database
+                        String sqlUpdate = "UPDATE Folders SET ServerFolderID = ?, SyncStatus = 'SYNCED' WHERE LocalPath = ?";
                         try (PreparedStatement ps = conn.prepareStatement(sqlUpdate)) {
-                            ps.setInt(1, existingFolderId);
+                            ps.setInt(1, existingServerFolderId);
                             ps.setString(2, task.localPath);
                             ps.executeUpdate();
                         }
                         
-                        System.out.println("✅ Đã cập nhật FolderID=" + existingFolderId + " cho folder đã tồn tại");
+                        System.out.println("✅ Đã cập nhật ServerFolderID=" + existingServerFolderId + " cho folder đã tồn tại");
                         return true;
                     }
                 }
@@ -865,13 +865,33 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
         if (downloaded) {
             // 2. Cập nhật CSDL SQLite
-            String sql = "INSERT OR REPLACE INTO Files (FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
+            // TODO: Cần map ServerFolderID → local FolderID
+            // Hiện tại tạm thời tìm FolderID local dựa trên ServerFolderID
+            int serverFolderId = data.get("FolderID").getAsInt();
+            Integer localFolderId = null;
+            
+            String sqlFindFolder = "SELECT FolderID FROM Folders WHERE ServerFolderID = ?";
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sqlFindFolder)) {
+                ps.setInt(1, serverFolderId);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    localFolderId = rs.getInt("FolderID");
+                }
+            }
+            
+            if (localFolderId == null) {
+                System.err.println("⚠️ Không tìm thấy FolderID local cho ServerFolderID=" + serverFolderId);
+                return;
+            }
+            
+            String sql = "INSERT OR REPLACE INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
                        + "VALUES (?, ?, ?, ?, ?, ?, 'SYNCED')";
             try (Connection conn = localDbManager.getConnection();
                  PreparedStatement ps = conn.prepareStatement(sql)) {
                 
-                ps.setInt(1, fileId);
-                ps.setInt(2, data.get("FolderID").getAsInt());
+                ps.setInt(1, fileId); // Lưu server FileID vào ServerFileID
+                ps.setInt(2, localFolderId); // Dùng local FolderID
                 ps.setString(3, fileName);
                 ps.setLong(4, data.get("FileSize").getAsLong());
                 ps.setString(5, localPath);
@@ -885,15 +905,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
      * Xử lý khi server báo 1 file bị XÓA.
      */
     private void handleServerFileDelete(JsonObject data) throws Exception {
-        int fileId = data.get("FileID").getAsInt();
-        System.out.println("Down-sync: Xóa file ID " + fileId);
+        int serverFileId = data.get("FileID").getAsInt();
+        System.out.println("Down-sync: Xóa file ServerFileID " + serverFileId);
         
-        // 1. Tìm file trong CSDL cục bộ
+        // 1. Tìm file trong CSDL cục bộ dựa trên ServerFileID
         String localPath = null;
-        String sqlFind = "SELECT LocalPath FROM Files WHERE FileID = ?";
+        String sqlFind = "SELECT LocalPath FROM Files WHERE ServerFileID = ?";
         try (Connection conn = localDbManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(sqlFind)) {
-            ps.setInt(1, fileId);
+            ps.setInt(1, serverFileId);
             ResultSet rs = ps.executeQuery();
             if (rs.next()) {
                 localPath = rs.getString("LocalPath");
@@ -905,10 +925,10 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             Files.deleteIfExists(syncDirectory.resolve(localPath));
             
             // 3. Xóa khỏi CSDL cục bộ
-            String sqlDelete = "DELETE FROM Files WHERE FileID = ?";
+            String sqlDelete = "DELETE FROM Files WHERE ServerFileID = ?";
             try (Connection conn = localDbManager.getConnection();
                  PreparedStatement ps = conn.prepareStatement(sqlDelete)) {
-                ps.setInt(1, fileId);
+                ps.setInt(1, serverFileId);
                 ps.executeUpdate();
             }
         }

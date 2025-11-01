@@ -51,21 +51,25 @@ public class LocalDatabaseManager {
      */
     public void initializeDatabase() {
         String sqlCreateFolders = "CREATE TABLE IF NOT EXISTS Folders ("
-                + "FolderID INTEGER PRIMARY KEY, " // ID của thư mục trên server
-                + "ParentFolderID INTEGER, "
+                + "FolderID INTEGER PRIMARY KEY AUTOINCREMENT, " // Local ID (stable, auto-increment)
+                + "ServerFolderID INTEGER UNIQUE, " // Server ID (from server response)
+                + "ParentFolderID INTEGER, " // Local FolderID of parent
                 + "FolderName TEXT NOT NULL, "
-                + "LocalPath TEXT, " // --- THÊM CỘT NÀY: Đường dẫn thư mục trên máy client (UNIQUE qua index) ---
-                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED' " // SYNCED, LOCAL_CREATED, LOCAL_DELETED
+                + "LocalPath TEXT, " // Đường dẫn thư mục trên máy client (UNIQUE qua index)
+                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED', " // SYNCED, LOCAL_CREATED, LOCAL_DELETED
+                + "FOREIGN KEY(ParentFolderID) REFERENCES Folders(FolderID)"
                 + ");";
 
         String sqlCreateFiles = "CREATE TABLE IF NOT EXISTS Files ("
-                + "FileID INTEGER PRIMARY KEY, " // ID của file trên server
-                + "FolderID INTEGER NOT NULL, "
+                + "FileID INTEGER PRIMARY KEY AUTOINCREMENT, " // Local ID (stable, auto-increment)
+                + "ServerFileID INTEGER UNIQUE, " // Server ID (from server response)
+                + "FolderID INTEGER NOT NULL, " // Local FolderID (FK to Folders)
                 + "FileName TEXT NOT NULL, "
                 + "FileSize BIGINT, "
                 + "LocalPath TEXT NOT NULL UNIQUE, " // Đường dẫn file trên máy client
                 + "LastKnownHash CHAR(64), "       // Hash khi đồng bộ lần cuối
-                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED' " // SYNCED, LOCAL_MODIFIED, LOCAL_DELETED, CONFLICT
+                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED', " // SYNCED, LOCAL_MODIFIED, LOCAL_DELETED, CONFLICT
+                + "FOREIGN KEY(FolderID) REFERENCES Folders(FolderID)"
                 + ");";
 
         // --- THAY THẾ ĐỊNH NGHĨA BẢNG NÀY ---
@@ -104,15 +108,35 @@ public class LocalDatabaseManager {
             stmt.execute(sqlCreateSettings);
             // ---------------------------
             
-            // --- MIGRATION: Thêm cột LocalPath vào bảng Folders nếu chưa có ---
+            // --- MIGRATION: Thêm các cột mới nếu chưa có ---
+            
+            // Migration 1: LocalPath
             try {
-                // Thêm cột không có UNIQUE constraint (SQLite không hỗ trợ ALTER TABLE ADD COLUMN với UNIQUE)
                 stmt.execute("ALTER TABLE Folders ADD COLUMN LocalPath TEXT;");
                 System.out.println("✅ Migration: Đã thêm cột LocalPath vào bảng Folders.");
             } catch (SQLException e) {
-                // Cột đã tồn tại - bỏ qua
                 if (!e.getMessage().contains("duplicate column name")) {
-                    System.err.println("⚠️ Migration warning: " + e.getMessage());
+                    System.err.println("⚠️ Migration warning (LocalPath): " + e.getMessage());
+                }
+            }
+            
+            // Migration 2: ServerFolderID
+            try {
+                stmt.execute("ALTER TABLE Folders ADD COLUMN ServerFolderID INTEGER UNIQUE;");
+                System.out.println("✅ Migration: Đã thêm cột ServerFolderID vào bảng Folders.");
+            } catch (SQLException e) {
+                if (!e.getMessage().contains("duplicate column name")) {
+                    System.err.println("⚠️ Migration warning (ServerFolderID): " + e.getMessage());
+                }
+            }
+            
+            // Migration 3: ServerFileID
+            try {
+                stmt.execute("ALTER TABLE Files ADD COLUMN ServerFileID INTEGER UNIQUE;");
+                System.out.println("✅ Migration: Đã thêm cột ServerFileID vào bảng Files.");
+            } catch (SQLException e) {
+                if (!e.getMessage().contains("duplicate column name")) {
+                    System.err.println("⚠️ Migration warning (ServerFileID): " + e.getMessage());
                 }
             }
             
@@ -121,7 +145,6 @@ public class LocalDatabaseManager {
                 stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_localpath ON Folders(LocalPath);");
                 System.out.println("✅ Đã tạo/kiểm tra unique index cho Folders.LocalPath.");
             } catch (SQLException e) {
-                // Index đã tồn tại hoặc lỗi khác - bỏ qua
                 if (!e.getMessage().contains("already exists")) {
                     System.err.println("⚠️ Index warning: " + e.getMessage());
                 }
