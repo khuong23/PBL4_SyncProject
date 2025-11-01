@@ -41,4 +41,35 @@ public final class FilesDAO {
             }
         }
     }
+
+    /**
+     * BƯỚC 7.2: Lấy file theo tên và folder (để kiểm tra xung đột)
+     */
+    public static Files getFileByNameAndFolder(String fileName, int folderId) throws SQLException {
+        String sql = "SELECT " + COLS + " FROM Files WHERE FileName = ? AND FolderID = ? LIMIT 1";
+        
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            ps.setString(1, fileName);
+            ps.setInt(2, folderId);
+            
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    Timestamp created = rs.getTimestamp("CreatedAt");
+                    Timestamp last = rs.getTimestamp("LastModified");
+                    return new Files(
+                            rs.getInt("FileID"),
+                            rs.getInt("FolderID"),
+                            rs.getString("FileName"),
+                            rs.getLong("FileSize"),
+                            rs.getString("FileHash"),
+                            created != null ? created.toLocalDateTime() : null,
+                            last != null ? last.toLocalDateTime() : null
+                    );
+                }
+                return null; // File không tồn tại
+            }
+        }
+    }
 }

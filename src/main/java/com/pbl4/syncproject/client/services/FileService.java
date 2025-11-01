@@ -9,6 +9,13 @@ import com.pbl4.syncproject.common.model.Folders;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 
+// --- THÊM CÁC IMPORT MỚI ---
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+// -----------------------------
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,10 +29,17 @@ import java.util.List;
 public class FileService {
 
     private final NetworkService networkService;
+    
+    // --- THÊM BIẾN MỚI ---
+    private final LocalDatabaseManager localDbManager;
+    // -----------------------
 
-    public FileService(NetworkService networkService) {
+    // --- SỬA LẠI CONSTRUCTOR ---
+    public FileService(NetworkService networkService, LocalDatabaseManager localDbManager) {
         this.networkService = networkService;
+        this.localDbManager = localDbManager;
     }
+    // ---------------------------
 
     /**
      * Fetch và parse file list từ server (all files)
@@ -50,14 +64,35 @@ public class FileService {
      * Fetch và parse file list từ server theo folder ID cụ thể
      */
     public ObservableList<FileItem> fetchAndParseFileList(int folderId) throws Exception {
-        // Get file list from server for specific folder
-        Response response = networkService.getFileList(folderId);
-
-        if (response != null && "success".equals(response.getStatus())) {
-            return parseFileListResponse(response);
+        
+        // --- SỬA LẠI: HỖ TRỢ OFFLINE ---
+        if (networkService.isOnline()) {
+            // ONLINE: Lấy từ server và cập nhật cache
+            try {
+                Response response = networkService.getFileList(folderId);
+                if (response != null && "success".equals(response.getStatus())) {
+                    ObservableList<FileItem> items = parseFileListResponse(response);
+                    
+                    // Cập nhật cache (chạy nền)
+                    // TODO: Cần cải thiện hàm saveFilesToCache để xử lý dữ liệu thô từ JSON
+                    // saveFilesToCache(folderId, items); 
+                    System.out.println("[Online] Đã tải " + items.size() + " file từ server.");
+                    
+                    return items;
+                }
+                throw new Exception("Server không trả về dữ liệu hợp lệ cho folder ID: " + folderId);
+                
+            } catch (Exception e) {
+                // Nếu gọi server lỗi (ví dụ 500), thử đọc từ cache
+                System.err.println("Lỗi khi gọi server, thử đọc từ cache: " + e.getMessage());
+                return getFilesFromCache(folderId);
+            }
+        } else {
+            // OFFLINE: Đọc thẳng từ cache
+            System.out.println("[Offline] Đang đọc files từ cache cho folder " + folderId);
+            return getFilesFromCache(folderId);
         }
-
-        throw new Exception("Server không trả về dữ liệu hợp lệ cho folder ID: " + folderId);
+        // ---------------------------------
     }
 
     /**
@@ -65,16 +100,35 @@ public class FileService {
      * @param parentId ID của thư mục cha (0 = lấy thư mục gốc)
      */
     public List<Folders> fetchAndParseFolderTree(int parentId) throws Exception {
-        Response response = networkService.getFolderTree(parentId);
+        
+        // --- SỬA LẠI: HỖ TRỢ OFFLINE ---
+        if (networkService.isOnline()) {
+            // ONLINE: Lấy từ server và cập nhật cache
+            try {
+                Response response = networkService.getFolderTree(parentId);
+                if (response != null && "success".equals(response.getStatus())) {
+                    List<Folders> folders = parseFoldersFromResponse(response);
+                    
+                    // Cập nhật cache
+                    saveFoldersToCache(parentId, folders);
+                    System.out.println("[Online] Đã tải " + folders.size() + " thư mục từ server.");
 
-        if (response != null && "success".equals(response.getStatus())) {
-            List<Folders> folders = parseFoldersFromResponse(response);
-            if (folders != null) { // Không cần kiểm tra !isEmpty() nữa
-                return folders;
+                    return folders;
+                }
+                String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
+                throw new Exception("Không có cây thư mục từ server: " + errorMsg);
+                
+            } catch (Exception e) {
+                // Nếu gọi server lỗi, thử đọc từ cache
+                System.err.println("Lỗi khi gọi server, thử đọc thư mục từ cache: " + e.getMessage());
+                return getFoldersFromCache(parentId);
             }
+        } else {
+            // OFFLINE: Đọc thẳng từ cache
+            System.out.println("[Offline] Đang đọc thư mục từ cache cho parent " + parentId);
+            return getFoldersFromCache(parentId);
         }
-        String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
-        throw new Exception("Không có cây thư mục từ server: " + errorMsg);
+        // ---------------------------------
     }
 
     /**
@@ -433,9 +487,167 @@ public class FileService {
             data.addProperty("fileName", fileName);
         }
         
+        // LỖI SỬA: Thêm username để server xác định người dùng
+        if (networkService.getCurrentUsername() != null) {
+            data.addProperty("username", networkService.getCurrentUsername());
+        }
+        
         com.pbl4.syncproject.common.jsonhandler.Request request = 
             new com.pbl4.syncproject.common.jsonhandler.Request("DELETE_FILE", data);
         
         return networkService.sendRequest(request);
+    }
+
+    // =================================================================
+    // LOCAL CACHE (SQLITE) METHODS
+    // =================================================================
+
+    /**
+     * Lấy danh sách Files từ CSDL SQLite cục bộ (khi OFFLINE).
+     */
+    private ObservableList<FileItem> getFilesFromCache(int folderId) {
+        ObservableList<FileItem> items = FXCollections.observableArrayList();
+        String sql = "SELECT * FROM Files WHERE FolderID = ? AND SyncStatus != 'LOCAL_DELETED'";
+
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            ps.setInt(1, folderId);
+            ResultSet rs = ps.executeQuery();
+            
+            while (rs.next()) {
+                // Tạo FileItem từ dữ liệu SQLite
+                String fileName = rs.getString("FileName");
+                String displayName = getFileIcon(fileName) + " " + fileName;
+                String fileSize = formatFileSize(rs.getLong("FileSize"));
+                String fileType = getFileType(fileName);
+                String syncStatus = rs.getString("SyncStatus"); // Lấy trạng thái từ cache
+
+                FileItem item = new FileItem(
+                        displayName,
+                        fileSize,
+                        fileType,
+                        "N/A (Offline)", // Không có LastModified trong cache, có thể thêm sau
+                        "N/A",
+                        "CACHE: " + syncStatus // Hiển thị trạng thái cache
+                );
+                item.setFileId(rs.getInt("FileID"));
+                item.setFolderId(rs.getInt("FolderID"));
+                items.add(item);
+            }
+        } catch (SQLException e) {
+            System.err.println("Lỗi đọc file cache SQLite: " + e.getMessage());
+        }
+        return items;
+    }
+
+    /**
+     * Lưu danh sách Files (từ server) vào CSDL SQLite cục bộ (khi ONLINE).
+     */
+    private void saveFilesToCache(int folderId, ObservableList<FileItem> items) {
+        String sqlDelete = "DELETE FROM Files WHERE FolderID = ?";
+        String sqlInsert = "INSERT INTO Files (FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
+                         + "VALUES (?, ?, ?, ?, ?, ?, 'SYNCED')";
+
+        try (Connection conn = localDbManager.getConnection()) {
+            conn.setAutoCommit(false);
+
+            // 1. Xóa tất cả file cũ của thư mục này trong cache
+            try (PreparedStatement psDelete = conn.prepareStatement(sqlDelete)) {
+                psDelete.setInt(1, folderId);
+                psDelete.executeUpdate();
+            }
+
+            // 2. Thêm file mới
+            try (PreparedStatement psInsert = conn.prepareStatement(sqlInsert)) {
+                for (FileItem item : items) {
+                    psInsert.setInt(1, item.getFileId());
+                    psInsert.setInt(2, item.getFolderId());
+                    // Lấy tên file gốc (bỏ icon)
+                    String originalName = item.getFileName().substring(item.getFileName().indexOf(" ") + 1);
+                    psInsert.setString(3, originalName);
+                    
+                    // Cần parse lại Long từ String "1.2 MB" (Tạm thời để 0)
+                    // TODO: Sửa lại logic parse size
+                    psInsert.setLong(4, 0L); 
+                    
+                    // TODO: Cần có đường dẫn file cục bộ thực tế
+                    psInsert.setString(5, "path/to/" + originalName); 
+                    
+                    // TODO: Cần lấy Hash thực tế từ server
+                    psInsert.setString(6, "temp_hash"); 
+                    
+                    psInsert.addBatch();
+                }
+                psInsert.executeBatch();
+            }
+            
+            conn.commit();
+        } catch (SQLException e) {
+            System.err.println("Lỗi lưu file cache SQLite: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Lấy danh sách Folders từ CSDL SQLite cục bộ (khi OFFLINE).
+     */
+    private List<Folders> getFoldersFromCache(int parentId) {
+        List<Folders> folders = new ArrayList<>();
+        // Nếu parentId = 0, lấy root (ParentFolderID IS NULL)
+        String sql = (parentId == 0)
+                ? "SELECT * FROM Folders WHERE ParentFolderID IS NULL AND SyncStatus != 'LOCAL_DELETED'"
+                : "SELECT * FROM Folders WHERE ParentFolderID = ? AND SyncStatus != 'LOCAL_DELETED'";
+
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            if (parentId != 0) {
+                ps.setInt(1, parentId);
+            }
+            
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Folders folder = new Folders();
+                folder.setFolderId(rs.getInt("FolderID"));
+                folder.setParentId(rs.getInt("ParentFolderID"));
+                folder.setFolderName(rs.getString("FolderName"));
+                // TODO: Cần query `hasChildren` cho chế độ offline
+                folder.setHasChildren(false); 
+                folders.add(folder);
+            }
+        } catch (SQLException e) {
+            System.err.println("Lỗi đọc folder cache SQLite: " + e.getMessage());
+        }
+        return folders;
+    }
+
+    /**
+     * Lưu danh sách Folders (từ server) vào CSDL SQLite cục bộ (khi ONLINE).
+     */
+    private void saveFoldersToCache(int parentId, List<Folders> folders) {
+        // Logic này phức tạp hơn, cần UPSERT (INSERT OR REPLACE)
+        String sqlUpsert = "INSERT OR REPLACE INTO Folders (FolderID, ParentFolderID, FolderName, SyncStatus) "
+                         + "VALUES (?, ?, ?, 'SYNCED')";
+        
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sqlUpsert)) {
+            
+            conn.setAutoCommit(false);
+            for (Folders folder : folders) {
+                ps.setInt(1, folder.getFolderId());
+                if (folder.getParentId() != null) {
+                    ps.setInt(2, folder.getParentId());
+                } else {
+                    ps.setNull(2, java.sql.Types.INTEGER);
+                }
+                ps.setString(3, folder.getFolderName());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+            conn.commit();
+
+        } catch (SQLException e) {
+            System.err.println("Lỗi lưu folder cache SQLite: " + e.getMessage());
+        }
     }
 }

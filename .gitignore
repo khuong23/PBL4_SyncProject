@@ -36,3 +36,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Bỏ qua file CSDL cache của client
+*.db
+*.db-journal

@@ -181,10 +181,12 @@ public class FileWatcherService {
             return;
         }
         
-        // Only process regular files
-        if (!Files.isRegularFile(filePath) && kind != StandardWatchEventKinds.ENTRY_DELETE) {
-            return;
-        }
+        // --- XÓA HOẶC VÔ HIỆU HÓA DÒNG NÀY ---
+        // Dòng này ngăn cản việc theo dõi thư mục:
+        // if (!Files.isRegularFile(filePath) && kind != StandardWatchEventKinds.ENTRY_DELETE) {
+        //     return;
+        // }
+        // ------------------------------------
         
         System.out.println("File event: " + kind.name() + " - " + filePath);
         

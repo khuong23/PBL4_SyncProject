@@ -18,6 +18,10 @@ public class ClientConnectionManager {
     private String serverIP;
     private int serverPort;
     
+    // --- THÊM BIẾN TRẠNG THÁI ---
+    private volatile boolean isOnline = false;
+    // -----------------------------
+    
     // Private constructor để đảm bảo singleton
     private ClientConnectionManager() {}
 
@@ -50,6 +54,10 @@ public class ClientConnectionManager {
         writer = new PrintWriter(socket.getOutputStream(), true);
         reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         
+        // --- CẬP NHẬT TRẠNG THÁI ONLINE ---
+        this.isOnline = true;
+        // -----------------------------------
+        
         System.out.println("✅ Kết nối liên tục được thiết lập tới " + ip + ":" + port);
     }
 
@@ -58,7 +66,9 @@ public class ClientConnectionManager {
      * @return true nếu đang kết nối
      */
     public synchronized boolean isConnected() {
-        return socket != null && socket.isConnected() && !socket.isClosed();
+        // --- SỬA LẠI ĐỂ KẾT HỢP TRẠNG THÁI ONLINE ---
+        return this.isOnline && socket != null && socket.isConnected() && !socket.isClosed();
+        // ---------------------------------------------
     }
     
     /**
@@ -68,24 +78,37 @@ public class ClientConnectionManager {
      * @throws IOException nếu có lỗi mạng
      */
     public synchronized String sendRequestAndGetResponse(String jsonRequest) throws IOException {
-        if (!isConnected()) {
-            throw new IOException("Không có kết nối tới server. Vui lòng đăng nhập lại.");
+        // --- SỬA LẠI ĐỂ PHÁT HIỆN VÀ XỬ LÝ OFFLINE ---
+        if (!this.isOnline) {
+            // Nếu ta đang nghĩ là offline, thử kết nối lại
+            try {
+                reconnect();
+            } catch (IOException e) {
+                // Vẫn lỗi -> chắc chắn offline
+                this.isOnline = false;
+                throw new IOException("Đang offline. Không thể kết nối lại: " + e.getMessage());
+            }
         }
         
+        // Nếu isOnline = true, hoặc vừa reconnect() thành công
         try {
             writer.println(jsonRequest);
             String response = reader.readLine();
             
             if (response == null) {
+                this.isOnline = false; // Server ngắt kết nối
                 throw new IOException("Server đã đóng kết nối");
             }
             
+            this.isOnline = true; // Gửi/nhận thành công -> chắc chắn online
             return response;
         } catch (IOException e) {
-            // Khi có lỗi, đóng kết nối để buộc tạo kết nối mới lần sau
-            close();
-            throw e;
+            // Khi có lỗi, đóng kết nối và đánh dấu offline
+            this.isOnline = false;
+            close(); // Đóng socket cũ
+            throw e; // Ném lỗi ra để NetworkService xử lý
         }
+        // -----------------------------------------------
     }
 
     /**
@@ -123,6 +146,9 @@ public class ClientConnectionManager {
             socket = null;
             writer = null;
             reader = null;
+            // --- ĐẶT TRẠNG THÁI OFFLINE ---
+            this.isOnline = false;
+            // -------------------------------
         }
     }
 

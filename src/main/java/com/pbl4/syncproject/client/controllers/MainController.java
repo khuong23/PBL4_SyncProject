@@ -4,6 +4,7 @@ import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.client.models.NotificationItem;
 import com.pbl4.syncproject.client.services.FileService;
 import com.pbl4.syncproject.client.services.FolderService;
+import com.pbl4.syncproject.client.services.LocalDatabaseManager;
 import com.pbl4.syncproject.client.services.NetworkService;
 import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
@@ -129,26 +130,44 @@ public class MainController implements Initializable {
         // Initialize services with server address from login
         networkService = new NetworkService(serverIP, serverPort);
         networkService.setCurrentUsername(currentUser); // Set username cho NetworkService
-        fileService = new FileService(networkService);
+        
+        // --- SỬA LẠI: Thêm LocalDatabaseManager vào FileService ---
+        fileService = new FileService(networkService, LocalDatabaseManager.getInstance());
+        // -----------------------------------------------------------
+        
         folderService = new FolderService(networkService);
-        uploadManager = new UploadManager(networkService, mainView);
-        syncAgent = new SyncAgent(networkService, uploadManager);
-
-        // Update connection status
-        if (mainView != null) {
-            mainView.setConnectionStatus("Kết nối: " + serverIP + ":" + serverPort, true);
-            mainView.setNetworkStatus("Mạng: Đã kết nối", true);
-            mainView.setUserInfo("User: " + currentUser); // Cập nhật tên user trên UI
-
-            // Update FileService trong MainView (sẽ tự động refresh folder tree)
-            mainView.setFileService(fileService);
-
-            // Now that we have networkService, initialize uploadManager
-            uploadManager = new UploadManager(networkService, mainView);
-
-            // Load initial data sau khi đã có services
-            loadInitialData();
+        
+        // --- SỬA LẠI: Khởi tạo mainView trước ---
+        // mainView phải được khởi tạo trước
+        if (mainView == null) {
+            initializeView(); // Đảm bảo mainView được khởi tạo
         }
+        mainView.setFileService(fileService);
+        uploadManager = new UploadManager(networkService, mainView);
+        
+        // --- SỬA LẠI DÒNG NÀY ---
+        // Dòng cũ: syncAgent = new SyncAgent(networkService, uploadManager);
+        // Dòng mới:
+        syncAgent = new SyncAgent(networkService, uploadManager, LocalDatabaseManager.getInstance());
+        // -----------------------
+
+        // Cập nhật UI ban đầu
+        mainView.setConnectionStatus("Kết nối: Vui lòng chờ...", true);
+        mainView.setNetworkStatus("Mạng: Đang kiểm tra...", true);
+        mainView.setUserInfo("User: " + currentUser);
+
+        // --- THÊM LOGIC MỚI: LẮNG NGHE TRẠNG THÁI MẠNG ---
+        networkService.isOnlineProperty().addListener((obs, wasOnline, isNowOnline) -> {
+            // Được gọi mỗi khi trạng thái online/offline thay đổi
+            onNetworkStatusChanged(isNowOnline);
+        });
+        
+        // Khởi động "nhịp tim"
+        networkService.startHeartbeat();
+        // --------------------------------------------------
+
+        // Load initial data sau khi đã có services
+        loadInitialData();
     }
     
     /**
@@ -933,12 +952,50 @@ public class MainController implements Initializable {
     }
 
     /**
+     * Được gọi bởi Listener trong NetworkService khi trạng thái mạng thay đổi.
+     * @param isNowOnline Trạng thái mạng mới
+     */
+    private void onNetworkStatusChanged(boolean isNowOnline) {
+        if (isNowOnline) {
+            System.out.println("SỰ KIỆN: Trở lại ONLINE");
+            mainView.setConnectionStatus("● Kết nối: Thành công", true);
+            mainView.setNetworkStatus("Mạng: Đã kết nối", true);
+            
+            // --- BỎ COMMENT VÀ SỬA DÒNG NÀY ---
+            // Kích hoạt hàng đợi đồng bộ
+            if (syncAgent != null) {
+                syncAgent.triggerSyncQueue(); 
+            }
+            // ---------------------------------
+            
+            // Tải lại thư mục hiện tại để lấy dữ liệu mới từ server
+            handleRefresh(); 
+            
+        } else {
+            System.out.println("SỰ KIỆN: Mất kết nối (OFFLINE)");
+            mainView.setConnectionStatus("● Mất kết nối", false);
+            mainView.setNetworkStatus("Mạng: Offline", false);
+            
+            // --- DỪNG ĐỒNG BỘ ---
+            // TODO: (Bước 5)
+            // syncAgent.stopSyncQueue();
+            System.out.println("LOGIC (TODO): Tạm dừng hàng đợi đồng bộ.");
+        }
+    }
+
+    /**
      * Cleanup resources
      */
     public void cleanup() {
         if (syncAgent != null) {
             syncAgent.stop();
             System.out.println("Sync agent stopped during cleanup");
+        }
+        
+        // Dừng heartbeat khi đóng ứng dụng
+        if (networkService != null) {
+            networkService.stopHeartbeat();
+            System.out.println("Heartbeat stopped during cleanup");
         }
     }
 }

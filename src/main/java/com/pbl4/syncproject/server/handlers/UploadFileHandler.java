@@ -6,6 +6,8 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.UserDAO;
+import com.pbl4.syncproject.server.dao.FilesDAO; // --- BƯỚC 7.2: THÊM IMPORT ---
+// Không import com.pbl4.syncproject.common.model.Files để tránh xung đột với java.nio.file.Files
 import com.pbl4.syncproject.common.storage.StorageManager;
 
 import java.nio.file.Files;
@@ -61,6 +63,31 @@ public class UploadFileHandler implements RequestHandler {
             if (!UserDAO.hasFolderPermission(userId, folderId, "WRITE")) {
                 return error("Bạn không có quyền ghi (upload) vào thư mục này.");
             }
+
+            // --- BƯỚC 7.2: LOGIC PHÁT HIỆN XUNG ĐỘT ---
+            // Lấy hash gốc mà client gửi lên (hash của file trước khi client sửa)
+            String clientBaseHash = (data.has("lastKnownHash") && !data.get("lastKnownHash").isJsonNull()) 
+                    ? data.get("lastKnownHash").getAsString() 
+                    : null;
+
+            // Kiểm tra xem file này đã tồn tại trên server chưa
+            com.pbl4.syncproject.common.model.Files existingFile = FilesDAO.getFileByNameAndFolder(fileName, folderId);
+
+            if (existingFile != null && clientBaseHash != null) {
+                // File đã tồn tại, và client CÓ gửi hash gốc
+                String serverCurrentHash = existingFile.getFileHash();
+                
+                // Nếu hash gốc client gửi KHÁC với hash hiện tại trên server
+                // -> Người khác đã sửa file này trong lúc client offline
+                if (!clientBaseHash.equals(serverCurrentHash)) {
+                    System.err.println("🔥 XUNG ĐỘT: File '" + fileName + "' - Client hash: " + clientBaseHash + ", Server hash: " + serverCurrentHash);
+                    
+                    // Từ chối upload
+                    return new Response("error", "CONFLICT", null);
+                }
+            }
+            // Nếu không có xung đột: (1) Đây là file mới, hoặc (2) Client và server cùng 1 phiên bản -> Cho phép upload
+            // ------------------------------------------
 
             // Giải mã base64 + kiểm soát kích thước
             byte[] fileBytes = Base64.getDecoder().decode(base64Content);

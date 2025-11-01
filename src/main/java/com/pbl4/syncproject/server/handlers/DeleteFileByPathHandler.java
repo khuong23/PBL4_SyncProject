@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.UserDAO; // Thêm để kiểm tra quyền
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +27,14 @@ public class DeleteFileByPathHandler implements RequestHandler {
             if (data == null || !data.has("relativePath")) {
                 res.setStatus("error");
                 res.setMessage("Thiếu relativePath.");
+                return res;
+            }
+
+            // LỖI SỬA: Kiểm tra quyền người dùng
+            int userId = UserDAO.getUserIdFromRequest(req);
+            if (userId <= 0) {
+                res.setStatus("error");
+                res.setMessage("Không xác định được người dùng");
                 return res;
             }
 
@@ -66,6 +75,13 @@ public class DeleteFileByPathHandler implements RequestHandler {
             if (meta == null) {
                 res.setStatus("error");
                 res.setMessage("Không tìm thấy file: " + fileName + " trong folder ID=" + folderId);
+                return res;
+            }
+
+            // LỖI SỬA: Kiểm tra quyền DELETE trên folder chứa file
+            if (!UserDAO.hasFolderPermission(userId, meta.folderId, "DELETE")) {
+                res.setStatus("error");
+                res.setMessage("Bạn không có quyền xóa (delete) file trong thư mục này.");
                 return res;
             }
 
