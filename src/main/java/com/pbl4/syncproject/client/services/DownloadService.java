@@ -48,7 +48,7 @@ public class DownloadService {
 
         System.out.println("Đang tải về: " + relativePath + " (ID: " + fileItem.getFileId() + ")");
 
-        Response response = networkService.downloadFile(originalFileName, fileItem.getFolderId());
+        Response response = networkService.downloadFile(fileItem.getFileId(), originalFileName, fileItem.getFolderId());
         if (response == null || !"success".equals(response.getStatus())) {
             throw new IOException("Tải file thất bại từ server: " + (response != null ? response.getMessage() : "null response"));
         }

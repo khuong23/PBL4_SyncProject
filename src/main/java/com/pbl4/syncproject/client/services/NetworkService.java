@@ -329,15 +329,16 @@ public class NetworkService {
     /**
      * Download file từ server
      */
-    public Response downloadFile(String fileName, int folderId) throws Exception {
+    public Response downloadFile(int fileId, String fileName, int folderId) throws Exception {
         validateServerAddress();
 
         JsonObject data = new JsonObject();
+        data.addProperty("fileId", String.valueOf(fileId)); // Gửi fileId dưới dạng String
         data.addProperty("fileName", fileName);
-        data.addProperty("folderId", folderId);
+        data.addProperty("folderId", String.valueOf(folderId)); // Gửi dưới dạng String
         addUsernameToData(data); // Thêm username vào request
 
-        Request request = new Request("DOWNLOAD", data);
+        Request request = new Request("DOWNLOAD_FILE", data);
         return sendRequest(request);
     }
 
