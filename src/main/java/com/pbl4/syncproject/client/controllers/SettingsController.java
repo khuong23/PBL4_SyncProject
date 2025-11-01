@@ -10,6 +10,10 @@ import java.io.File;
 import java.net.URL;
 import java.util.ResourceBundle;
 
+// --- THÊM IMPORT NÀY ---
+import com.pbl4.syncproject.client.services.SettingsService;
+// -----------------------
+
 public class SettingsController implements Initializable {
 
     // Network Settings
@@ -65,8 +69,16 @@ public class SettingsController implements Initializable {
     @FXML private Button btnApply;
     @FXML private Button btnOK;
 
+    // --- THÊM DÒNG NÀY ---
+    private SettingsService settingsService;
+    // -----------------------
+
     @Override
     public void initialize(URL location, ResourceBundle resources) {
+        // --- THÊM DÒNG NÀY ---
+        this.settingsService = SettingsService.getInstance();
+        // -----------------------
+        
         setupSpinners();
         loadSettings();
         setupValidation();
@@ -91,19 +103,17 @@ public class SettingsController implements Initializable {
     }
 
     private void loadSettings() {
-        // In real implementation, load from configuration file or registry
-        // For now, we'll use default values which are already set in FXML
+        // --- SỬA LẠI: Tải cài đặt THẬT từ SettingsService ---
+        // Lấy đường dẫn mặc định nếu chưa có cài đặt
+        String defaultSyncDir = System.getProperty("user.home") + File.separator + "SyncData";
+        String defaultTempDir = System.getProperty("java.io.tmpdir") + File.separator + "SyncApp";
 
-        // Example of loading settings from a properties file:
-        // Properties props = new Properties();
-        // try (InputStream input = new FileInputStream("config.properties")) {
-        //     props.load(input);
-        //     txtServerIP.setText(props.getProperty("server.ip", "127.0.0.1"));
-        //     txtServerPort.setText(props.getProperty("server.port", "5000"));
-        //     // ... load other settings
-        // } catch (IOException e) {
-        //     // Use default values
-        // }
+        // Tải từ file properties
+        txtSyncFolder.setText(settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, defaultSyncDir));
+        txtTempFolder.setText(settingsService.getSetting(SettingsService.KEY_TEMP_DIRECTORY, defaultTempDir));
+        
+        // ... (Các cài đặt khác như CheckBox, Spinner có thể thêm sau nếu cần)
+        // ----------------------------------------------------
     }
 
     private void setupValidation() {
@@ -296,28 +306,19 @@ public class SettingsController implements Initializable {
     }
 
     private void saveSettings() {
-        // In real implementation, save to configuration file or registry
-        // For now, we'll just print the settings
-
-        System.out.println("Saving settings:");
-        System.out.println("Server IP: " + txtServerIP.getText());
-        System.out.println("Server Port: " + txtServerPort.getText());
-        System.out.println("Auto Sync: " + chkAutoSync.isSelected());
-        System.out.println("Sync Interval: " + spnSyncInterval.getValue());
-        // ... save other settings
-
-        // Example of saving to properties file:
-        // Properties props = new Properties();
-        // props.setProperty("server.ip", txtServerIP.getText());
-        // props.setProperty("server.port", txtServerPort.getText());
-        // props.setProperty("auto.sync", String.valueOf(chkAutoSync.isSelected()));
-        // // ... set other properties
-        //
-        // try (OutputStream output = new FileOutputStream("config.properties")) {
-        //     props.store(output, "Application Settings");
-        // } catch (IOException e) {
-        //     showErrorMessage("Không thể lưu cài đặt: " + e.getMessage());
-        // }
+        // --- SỬA LẠI: Lưu cài đặt THẬT vào SettingsService ---
+        // 1. Lưu vào đối tượng SettingsService (trong bộ nhớ)
+        settingsService.setSetting(SettingsService.KEY_SYNC_DIRECTORY, txtSyncFolder.getText());
+        settingsService.setSetting(SettingsService.KEY_TEMP_DIRECTORY, txtTempFolder.getText());
+        // ... (Lưu các cài đặt khác nếu cần)
+        
+        // 2. Yêu cầu SettingsService ghi ra file
+        settingsService.saveSettings();
+        
+        System.out.println("✅ Đã lưu cài đặt:");
+        System.out.println("  - Thư mục đồng bộ: " + txtSyncFolder.getText());
+        System.out.println("  - Thư mục tạm: " + txtTempFolder.getText());
+        // ----------------------------------------------------
     }
 
     private boolean isValidIP(String ip) {

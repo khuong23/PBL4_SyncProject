@@ -24,8 +24,6 @@ public class Dispatcher {
         handlers.put("GRANT_FOLDER_PERMISSION", new GrantFolderPermissionHandler());
         handlers.put("GET_FOLDER_PERMISSIONS", new GetFolderPermissionsHandler());
         handlers.put("GET_USER_LIST", new GetUserListHandler());
-        
-        // --- THÊM HANDLER MỚI NÀY (BƯỚC 6.4) ---
         handlers.put("GET_CHANGES_SINCE", new GetChangesSinceHandler());
         // -----------------------------
 

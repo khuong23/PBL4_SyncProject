@@ -10,6 +10,7 @@ import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
 import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.services.DownloadService;
+import com.pbl4.syncproject.client.services.SettingsService; // --- THÊM IMPORT NÀY ---
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
@@ -92,6 +93,7 @@ public class MainController implements Initializable {
     private SyncAgent syncAgent;
     private NotificationManager notificationManager;
     private String syncDirectoryPath; // đường dẫn thư mục đồng bộ
+    private SettingsService settingsService; // --- THÊM DÒNG NÀY ---
     
     // PopOver để hiển thị thông báo
     private PopOver notificationPopOver;
@@ -108,6 +110,12 @@ public class MainController implements Initializable {
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
+        // --- THÊM DÒNG NÀY ---
+        this.settingsService = SettingsService.getInstance();
+        // Tải cài đặt ngay lập tức
+        this.settingsService.loadSettings();
+        // -----------------------
+        
         // Chỉ initialize view và setup handlers
         // Services sẽ được khởi tạo sau khi login thành công
         initializeView();
@@ -167,11 +175,16 @@ public class MainController implements Initializable {
         
         // Khởi động "nhịp tim"
         networkService.startHeartbeat();
-    // --------------------------------------------------
-    // --- THÊM: Khởi tạo DownloadService và syncDirectoryPath ---
-    this.syncDirectoryPath = System.getProperty("user.home") + File.separator + "SyncFolder";
-    this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), syncDirectoryPath);
-    // -----------------------------------------------------------
+        // --------------------------------------------------
+        
+        // --- SỬA LẠI: Lấy đường dẫn đồng bộ TỪ FILE CÀI ĐẶT ---
+        String defaultSyncDir = System.getProperty("user.home") + File.separator + "SyncData";
+        this.syncDirectoryPath = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, defaultSyncDir);
+        
+        // Khởi tạo DownloadService với đường dẫn ĐÚNG
+        this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), this.syncDirectoryPath);
+        System.out.println("✅ Khởi tạo DownloadService với đường dẫn: " + this.syncDirectoryPath);
+        // -------------------------------------------------------
 
         // Load initial data sau khi đã có services
         loadInitialData();
@@ -480,9 +493,13 @@ public class MainController implements Initializable {
      */
     private void startSyncAgent() {
         try {
-            String syncDir = System.getProperty("user.home") + File.separator + "SyncFolder";
+            // --- SỬA LẠI: Sử dụng biến syncDirectoryPath đã được tải từ SettingsService ---
+            // Dòng cũ: String syncDir = System.getProperty("user.home") + File.separator + "SyncFolder";
+            String syncDir = this.syncDirectoryPath; // Sử dụng đường dẫn từ cài đặt
+            // -------------------------------------------------------------------------------
+            
             syncAgent.start(syncDir);
-            System.out.println("Started sync agent for directory: " + syncDir);
+            System.out.println("✅ Started sync agent for directory: " + syncDir);
             updateSyncAgentStatus();
         } catch (Exception e) {
             System.err.println("Failed to start sync agent: " + e.getMessage());
