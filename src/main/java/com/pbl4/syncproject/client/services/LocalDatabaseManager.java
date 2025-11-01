@@ -54,6 +54,7 @@ public class LocalDatabaseManager {
                 + "FolderID INTEGER PRIMARY KEY, " // ID của thư mục trên server
                 + "ParentFolderID INTEGER, "
                 + "FolderName TEXT NOT NULL, "
+                + "LocalPath TEXT, " // --- THÊM CỘT NÀY: Đường dẫn thư mục trên máy client (UNIQUE qua index) ---
                 + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED' " // SYNCED, LOCAL_CREATED, LOCAL_DELETED
                 + ");";
 
@@ -102,6 +103,30 @@ public class LocalDatabaseManager {
             // --- THỰC THI TẠO BẢNG MỚI ---
             stmt.execute(sqlCreateSettings);
             // ---------------------------
+            
+            // --- MIGRATION: Thêm cột LocalPath vào bảng Folders nếu chưa có ---
+            try {
+                // Thêm cột không có UNIQUE constraint (SQLite không hỗ trợ ALTER TABLE ADD COLUMN với UNIQUE)
+                stmt.execute("ALTER TABLE Folders ADD COLUMN LocalPath TEXT;");
+                System.out.println("✅ Migration: Đã thêm cột LocalPath vào bảng Folders.");
+            } catch (SQLException e) {
+                // Cột đã tồn tại - bỏ qua
+                if (!e.getMessage().contains("duplicate column name")) {
+                    System.err.println("⚠️ Migration warning: " + e.getMessage());
+                }
+            }
+            
+            // --- Tạo indexes (SAU KHI migration hoàn tất) ---
+            try {
+                stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_localpath ON Folders(LocalPath);");
+                System.out.println("✅ Đã tạo/kiểm tra unique index cho Folders.LocalPath.");
+            } catch (SQLException e) {
+                // Index đã tồn tại hoặc lỗi khác - bỏ qua
+                if (!e.getMessage().contains("already exists")) {
+                    System.err.println("⚠️ Index warning: " + e.getMessage());
+                }
+            }
+            // -----------------------------------------------------------------
             
             System.out.println("✅ CSDL cục bộ (SQLite) đã được khởi tạo/sẵn sàng.");
 
