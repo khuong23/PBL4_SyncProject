@@ -97,4 +97,45 @@ public class FolderDAO {
         }
         return null;
     }
+
+    /**
+     * Lấy đường dẫn tương đối (ví dụ: "shared/reports") từ FolderID.
+     * Trả về "" (chuỗi rỗng) cho thư mục gốc (ID=1).
+     */
+    public String getRelativePath(int folderId) throws SQLException {
+        if (folderId == 1) { // root
+            return "";
+        }
+
+        StringBuilder path = new StringBuilder();
+        Integer currentId = folderId;
+
+        String sql = "SELECT FolderName, ParentFolderID FROM Folders WHERE FolderID = ?";
+        try (PreparedStatement ps = this.dbConnection.prepareStatement(sql)) {
+            while (currentId != null && currentId != 1) {
+                ps.setInt(1, currentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        String name = rs.getString("FolderName");
+                        path.insert(0, name + "/");
+                        Object parentObj = rs.getObject("ParentFolderID");
+                        if (parentObj == null) {
+                            currentId = null;
+                        } else {
+                            currentId = (Integer) parentObj;
+                            if (currentId == 1) break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (path.length() > 0 && path.charAt(path.length() - 1) == '/') {
+            path.deleteCharAt(path.length() - 1);
+        }
+
+        return path.toString();
+    }
 }

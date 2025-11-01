@@ -56,6 +56,9 @@ public class FileListHandler implements RequestHandler {
             List<Folders> childFolders = folderDAO.getChildren(folderId);
             List<Files> filesInFolder  = FilesDAO.getFilesInFolder(folderId);
 
+            // Lấy đường dẫn tương đối của thư mục cha (ví dụ: "shared/reports")
+            String parentRelativePath = folderDAO.getRelativePath(folderId);
+
             // Lọc các folder con mà user có quyền READ
             List<Folders> filteredFolders = childFolders.stream()
                 .filter(folder -> UserDAO.hasFolderPermission(userId, folder.getFolderId(), "READ"))
@@ -63,7 +66,7 @@ public class FileListHandler implements RequestHandler {
 
             JsonObject payload = new JsonObject();
             payload.add("folders", toJsonFolders(filteredFolders));
-            payload.add("files",   toJsonFiles(filesInFolder));
+            payload.add("files",   toJsonFiles(filesInFolder, parentRelativePath));
 
             res.setStatus("success");
             res.setMessage("Lấy danh sách thành công");
@@ -99,7 +102,7 @@ public class FileListHandler implements RequestHandler {
         return arr;
     }
 
-    private JsonArray toJsonFiles(List<Files> list) {
+    private JsonArray toJsonFiles(List<Files> list, String parentRelativePath) {
         JsonArray arr = new JsonArray();
         for (Files f : list) {
             JsonObject o = new JsonObject();
@@ -109,6 +112,15 @@ public class FileListHandler implements RequestHandler {
 
             // Nếu cần tên folder, tạo thêm DAO JOIN lấy FolderName rồi set vào đây
             o.addProperty("folderName", "");
+
+            // Ghép đường dẫn cha và tên file -> relativePath
+            String relativePath;
+            if (parentRelativePath == null || parentRelativePath.isEmpty()) {
+                relativePath = f.getFileName();
+            } else {
+                relativePath = parentRelativePath + "/" + f.getFileName();
+            }
+            o.addProperty("relativePath", relativePath);
 
             o.addProperty("size", formatFileSize(f.getSize()));
             o.addProperty("fileType", getFileType(f.getFileName()));

@@ -9,6 +9,7 @@ import com.pbl4.syncproject.client.services.NetworkService;
 import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
 import com.pbl4.syncproject.client.services.UploadManager;
+import com.pbl4.syncproject.client.services.DownloadService;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
@@ -87,8 +88,10 @@ public class MainController implements Initializable {
     private FileService fileService;
     private FolderService folderService;
     private UploadManager uploadManager;
+    private DownloadService downloadService;
     private SyncAgent syncAgent;
     private NotificationManager notificationManager;
+    private String syncDirectoryPath; // đường dẫn thư mục đồng bộ
     
     // PopOver để hiển thị thông báo
     private PopOver notificationPopOver;
@@ -164,7 +167,11 @@ public class MainController implements Initializable {
         
         // Khởi động "nhịp tim"
         networkService.startHeartbeat();
-        // --------------------------------------------------
+    // --------------------------------------------------
+    // --- THÊM: Khởi tạo DownloadService và syncDirectoryPath ---
+    this.syncDirectoryPath = System.getProperty("user.home") + File.separator + "SyncFolder";
+    this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), syncDirectoryPath);
+    // -----------------------------------------------------------
 
         // Load initial data sau khi đã có services
         loadInitialData();
@@ -541,7 +548,25 @@ public class MainController implements Initializable {
     private void handleFileAction(FileItem fileItem, String action) {
         switch (action.toLowerCase()) {
             case "download":
-                downloadFile(fileItem);
+                // Use DownloadService if available
+                if (downloadService != null) {
+                    mainView.setStatusMessage("Đang tải về " + fileItem.getFileName() + "...");
+                    TaskWrapper.executeAsync(
+                            "Đang tải về: " + fileItem.getFileName(),
+                            () -> { try { downloadService.downloadAndSaveFile(fileItem); return true; } catch (Exception e) { throw new RuntimeException(e); } },
+                            (success) -> {
+                                mainView.setStatusMessage("✅ Tải về thành công: " + fileItem.getFileName());
+                                mainView.showAlert("Thành công", "Đã tải file về thư mục đồng bộ!", IMainView.AlertType.INFORMATION);
+                            },
+                            (error) -> {
+                                mainView.setStatusMessage("❌ Tải về thất bại: " + error);
+                                mainView.showAlert("Lỗi", "Không thể tải file: " + error, IMainView.AlertType.ERROR);
+                            },
+                            mainView
+                    );
+                } else {
+                    downloadFile(fileItem);
+                }
                 break;
             case "edit":
                 editFile(fileItem);

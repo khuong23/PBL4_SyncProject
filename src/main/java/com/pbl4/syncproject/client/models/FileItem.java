@@ -14,6 +14,8 @@ public class FileItem {
     private String permissions;
     private String syncStatus;
     private String folderName; // Thêm trường folder để biết file thuộc folder nào
+    // --- THÊM TRƯỜNG relativePath ---
+    private String relativePath;
 
     public FileItem() {
         // Default constructor
@@ -40,6 +42,15 @@ public class FileItem {
         this.permissions = permissions;
         this.syncStatus = syncStatus;
         this.folderName = folderName;
+    }
+
+    // Getter/Setter for relativePath
+    public String getRelativePath() {
+        return relativePath;
+    }
+
+    public void setRelativePath(String relativePath) {
+        this.relativePath = relativePath;
     }
 
     // Getters and setters

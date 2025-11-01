@@ -300,6 +300,13 @@ public class FileService {
             if (json.has("folderId")) {
                 fileItem.setFolderId(json.get("folderId").getAsInt());
             }
+
+            // --- BƯỚC 6.2: Đọc relativePath nếu server đã trả về ---
+            if (json.has("relativePath")) {
+                try {
+                    fileItem.setRelativePath(json.get("relativePath").getAsString());
+                } catch (Exception ignore) {}
+            }
             
             return fileItem;
 
