@@ -24,7 +24,7 @@ public class DeleteFolderHandler implements RequestHandler {
             if (data == null || !data.has("folderId") || data.get("folderId").isJsonNull()) {
                 return err("Thiếu 'folderId'");
             }
-            
+            // Lấy userId để kiểm tra quyền
             // Lấy userId để kiểm tra quyền
             int userId = UserDAO.getUserIdFromRequest(req);
             if (userId <= 0) {
