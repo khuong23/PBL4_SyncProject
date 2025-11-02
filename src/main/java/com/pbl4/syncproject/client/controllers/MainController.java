@@ -31,9 +31,12 @@ import javafx.scene.layout.StackPane;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
+import javafx.application.Platform;
 import org.controlsfx.control.PopOver;
 
+import java.awt.Desktop;
 import java.io.File;
+import java.io.IOException;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.List;
@@ -565,6 +568,9 @@ public class MainController implements Initializable {
      */
     private void handleFileAction(FileItem fileItem, String action) {
         switch (action.toLowerCase()) {
+            case "open":
+                openFileLocally(fileItem);
+                break;
             case "download":
                 // Use DownloadService if available
                 if (downloadService != null) {
@@ -881,6 +887,107 @@ public class MainController implements Initializable {
         } catch (Exception e) {
             mainView.showAlert("Lỗi", "Lỗi khi upload file: " + e.getMessage(), IMainView.AlertType.ERROR);
             mainView.setStatusMessage("Lỗi: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Mở file bằng chương trình mặc định của hệ điều hành.
+     * Tự động tải về nếu file chưa tồn tại trên máy.
+     */
+    private void openFileLocally(FileItem fileItem) {
+        try {
+            // 1. Lấy đường dẫn file đầy đủ trên máy
+            SettingsService settingsService = SettingsService.getInstance();
+            String syncDir = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, "");
+            
+            if (syncDir == null || syncDir.isEmpty()) {
+                mainView.showAlert("Lỗi", "Thư mục đồng bộ chưa được thiết lập!", IMainView.AlertType.ERROR);
+                return;
+            }
+            
+            // Lấy relativePath
+            String relativePath = fileItem.getRelativePath();
+            if (relativePath == null || relativePath.isEmpty()) {
+                mainView.showAlert("Lỗi", "Không xác định được đường dẫn file!", IMainView.AlertType.ERROR);
+                return;
+            }
+
+            File fileToOpen = new File(syncDir, relativePath);
+
+            // 2. Kiểm tra file có tồn tại không
+            if (!fileToOpen.exists()) {
+                // File không có trên máy -> Hỏi người dùng có muốn tải về không
+                boolean download = mainView.showConfirmDialog(
+                        "File chưa có trên máy",
+                        "File '" + fileItem.getFileName() + "' chưa có trên máy.\n" +
+                        "Bạn có muốn tải về và mở không?"
+                );
+                
+                if (!download) {
+                    return;
+                }
+                
+                // Tải file về trước
+                mainView.setStatusMessage("Đang tải file về để mở...");
+                
+                if (downloadService != null) {
+                    TaskWrapper.executeAsync(
+                            "Đang tải về: " + fileItem.getFileName(),
+                            () -> { 
+                                try { 
+                                    downloadService.downloadAndSaveFile(fileItem); 
+                                    return true; 
+                                } catch (Exception e) { 
+                                    throw new RuntimeException(e); 
+                                } 
+                            },
+                            (success) -> {
+                                mainView.setStatusMessage("✅ Tải về thành công. Đang mở file...");
+                                // Mở file sau khi tải về
+                                Platform.runLater(() -> openFileWithDesktop(fileToOpen));
+                            },
+                            (error) -> {
+                                mainView.setStatusMessage("❌ Không thể tải file: " + error);
+                                mainView.showAlert("Lỗi", "Không thể tải file về để mở: " + error, 
+                                                 IMainView.AlertType.ERROR);
+                            },
+                            mainView
+                    );
+                } else {
+                    mainView.showAlert("Lỗi", "DownloadService chưa được khởi tạo!", IMainView.AlertType.ERROR);
+                }
+                
+            } else {
+                // 3. File đã có -> Mở ngay
+                openFileWithDesktop(fileToOpen);
+            }
+
+        } catch (Exception e) {
+            mainView.showAlert("Lỗi Mở File", "Không thể mở file: " + e.getMessage(), 
+                             IMainView.AlertType.ERROR);
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Hàm helper để gọi java.awt.Desktop để mở file
+     */
+    private void openFileWithDesktop(File file) {
+        if (!Desktop.isDesktopSupported()) {
+            mainView.showAlert("Lỗi", "Hệ điều hành không hỗ trợ mở file tự động.", 
+                             IMainView.AlertType.ERROR);
+            return;
+        }
+        
+        try {
+            Desktop.getDesktop().open(file);
+            mainView.setStatusMessage("✅ Đã mở file: " + file.getName());
+        } catch (IOException e) {
+            mainView.showAlert("Lỗi Mở File", 
+                             "Không tìm thấy chương trình mặc định để mở file này.\n" +
+                             "Vui lòng mở thủ công tại: " + file.getAbsolutePath(), 
+                             IMainView.AlertType.ERROR);
             e.printStackTrace();
         }
     }

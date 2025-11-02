@@ -12,6 +12,7 @@ module com.pbl4.syncproject {
     requires java.sql;
     requires com.google.gson;
     requires com.zaxxer.hikari;
+    requires java.desktop; // Cần cho java.awt.Desktop (mở file)
 
     exports com.pbl4.syncproject.client to javafx.graphics;
     opens com.pbl4.syncproject.client to javafx.fxml;

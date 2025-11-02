@@ -308,6 +308,19 @@ public class MainView implements IMainView {
         });
         // --- KẾT THÚC ĐOẠN MÃ TÔ MÀU ---
 
+        // --- THÊM LOGIC DOUBLE-CLICK ĐỂ "MỞ FILE" ---
+        tableFiles.setOnMouseClicked(mouseEvent -> {
+            if (mouseEvent.getClickCount() == 2) { // Kiểm tra double-click
+                FileItem selectedItem = tableFiles.getSelectionModel().getSelectedItem();
+                
+                if (selectedItem != null && onFileDoubleClick != null) {
+                    // Gửi một hành động "open" mới tới Controller
+                    onFileDoubleClick.onFileAction(selectedItem, "open");
+                }
+            }
+        });
+        // --- KẾT THÚC THÊM ---
+
         // Selection listener
         tableFiles.getSelectionModel().selectedItemProperty().addListener((obs, oldSelection, newSelection) -> {
             updateSelectionInfo();
