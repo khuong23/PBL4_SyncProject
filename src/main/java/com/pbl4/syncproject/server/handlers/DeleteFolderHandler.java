@@ -25,7 +25,6 @@ public class DeleteFolderHandler implements RequestHandler {
                 return err("Thiếu 'folderId'");
             }
             // Lấy userId để kiểm tra quyền
-            // Lấy userId để kiểm tra quyền
             int userId = UserDAO.getUserIdFromRequest(req);
             if (userId <= 0) {
                 return err("Cần xác thực người dùng (userId không hợp lệ)");

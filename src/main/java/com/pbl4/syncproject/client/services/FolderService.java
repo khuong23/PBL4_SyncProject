@@ -16,6 +16,7 @@ public class FolderService {
             throw new IllegalArgumentException("folderName rỗng");
         JsonObject data = new JsonObject();
         data.addProperty("folderName", folderName.trim());
+        data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("CREATE_FOLDER", data));
     }
 
@@ -24,6 +25,7 @@ public class FolderService {
         JsonObject data = new JsonObject();
         data.addProperty("folderName", folderName.trim());
         data.addProperty("parentFolderId", parentId);
+        data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("CREATE_FOLDER", data));
     }
     /** Đổi tên thư mục */
@@ -34,6 +36,7 @@ public class FolderService {
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
         data.addProperty("newName", newName.trim());
+        data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("RENAME_FOLDER", data));
     }
 
@@ -43,6 +46,7 @@ public class FolderService {
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
         data.addProperty("recursive", recursive); // Gửi cờ recursive lên server
+        data.addProperty("username", net.getCurrentUsername()); // --- FIX LỖI: Thêm username ---
         return net.sendRequest(new Request("DELETE_FOLDER", data));
     }
 
@@ -53,6 +57,7 @@ public class FolderService {
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
         data.addProperty("newParentId", newParentId);
+        data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("MOVE_FOLDER", data));
     }
 }
