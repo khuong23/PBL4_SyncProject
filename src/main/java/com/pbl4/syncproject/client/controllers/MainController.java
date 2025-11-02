@@ -10,7 +10,8 @@ import com.pbl4.syncproject.client.services.NotificationManager;
 import com.pbl4.syncproject.client.services.SyncAgent;
 import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.services.DownloadService;
-import com.pbl4.syncproject.client.services.SettingsService; // --- THÊM IMPORT NÀY ---
+import com.pbl4.syncproject.client.services.SettingsService;
+import com.pbl4.syncproject.client.services.FileHashService; // --- THÊM IMPORT NÀY ---
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
@@ -826,25 +827,40 @@ public class MainController implements Initializable {
                 return;
             }
 
-            // 4. Validate file before upload
+            // 4. Calculate file hash BEFORE upload (to save after success)
+            String currentFileHash = "";
+            try {
+                FileHashService hashService = new FileHashService();
+                currentFileHash = hashService.calculateFileHash(localFile);
+            } catch (Exception e) {
+                mainView.showAlert("Lỗi", "Không thể tính hash file: " + e.getMessage(), IMainView.AlertType.ERROR);
+                return;
+            }
+            
+            // 5. Validate file before upload
             if (uploadManager != null && !uploadManager.validateFileForUpload(localFile)) {
                 return;
             }
 
-            // 5. Upload file using UploadManager
+            // 6. Upload file using UploadManager
             mainView.setStatusMessage("Đang upload " + fileItem.getFileName() + "...");
             
             // Use folderId as string (UploadManager expects currentDirectory as string)
             String currentDirectory = String.valueOf(fileItem.getFolderId());
+            
+            // Make hash final to use in callback
+            final String uploadedFileHash = currentFileHash;
             
             if (uploadManager != null) {
                 uploadManager.uploadFile(localFile, currentDirectory, new UploadManager.UploadResultCallback() {
                     @Override
                     public void onUploadResult(File file, FileItem newFileItem, boolean success, String message) {
                         if (success) {
-                            // Update cache status to SYNCED
+                            // LỖI ĐÃ SỬA: Update both status AND hash
                             LocalDatabaseManager dbManager = LocalDatabaseManager.getInstance();
-                            dbManager.updateFileStatus(relativePath, LocalDatabaseManager.STATUS_SYNCED);
+                            dbManager.updateFileStatusAndHash(relativePath, 
+                                                             LocalDatabaseManager.STATUS_SYNCED, 
+                                                             uploadedFileHash);
                             
                             // Update status message
                             mainView.setStatusMessage("✅ Upload thành công: " + fileItem.getFileName());

@@ -226,5 +226,31 @@ public class LocalDatabaseManager {
             e.printStackTrace();
         }
     }
+
+    /**
+     * Cập nhật cả trạng thái và hash của file (dùng sau khi upload thành công).
+     * @param localPath Đường dẫn tương đối của file
+     * @param newStatus Trạng thái mới (thường là SYNCED)
+     * @param newHash Hash mới nhất của file (hash đã được upload)
+     */
+    public void updateFileStatusAndHash(String localPath, String newStatus, String newHash) {
+        String sql = "UPDATE Files SET SyncStatus = ?, LastKnownHash = ? WHERE LocalPath = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newStatus);
+            ps.setString(2, newHash);
+            ps.setString(3, localPath);
+            int rowsAffected = ps.executeUpdate();
+            
+            if (rowsAffected > 0) {
+                System.out.println("✅ Đã cập nhật (Sync + Hash): " + localPath + " -> " + newStatus);
+            } else {
+                System.out.println("⚠️ Không tìm thấy file trong cache: " + localPath);
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ Lỗi khi cập nhật trạng thái và hash: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
     // ----------------------------------------
 }

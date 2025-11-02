@@ -293,13 +293,13 @@ public class MainView implements IMainView {
                     if (status != null) {
                         if (status.equals(LocalDatabaseManager.STATUS_LOCAL_NEW)) {
                             // Trạng thái: Mới ở Client -> MÀU XANH
-                            setStyle("-fx-background-color: #dcfce7;"); // Xanh lá nhạt
+                            setStyle("-fx-background-color: #618a46ff;"); // Xanh lá nhạt
                         } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_STALE)) {
                             // Trạng thái: Đã sửa ở Client -> MÀU VÀNG
-                            setStyle("-fx-background-color: #fef9c3;"); // Vàng nhạt
+                            setStyle("-fx-background-color: #d3eb03ff;"); // Vàng nhạt
                         } else if (status.equals(LocalDatabaseManager.STATUS_CONFLICT)) {
                             // Trạng thái: Xung đột -> MÀU ĐỎ
-                            setStyle("-fx-background-color: #fee2e2;"); // Đỏ nhạt
+                            setStyle("-fx-background-color: #f30c0cff;"); // Đỏ nhạt
                         }
                         // Nếu là SYNCED hoặc khác, sẽ dùng style mặc định (không màu)
                     }

@@ -361,7 +361,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 psUpsert.setString(3, file.getName());
                 psUpsert.setLong(4, file.length());
                 psUpsert.setString(5, sqlPath);
-                psUpsert.setString(6, lastHash); // GIỮ NGUYÊN hash CŨ (hoặc null nếu file mới)
+                psUpsert.setString(6, currentHash); // LỖI ĐÃ SỬA: Lưu HASH MỚI (hiện tại) vào LastKnownHash
                 psUpsert.setString(7, newStatus); // Đặt trạng thái mới (XANH hoặc VÀNG)
                 psUpsert.executeUpdate();
             }
