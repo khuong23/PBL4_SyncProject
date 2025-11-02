@@ -293,7 +293,7 @@ public class MainView implements IMainView {
                     if (status != null) {
                         if (status.equals(LocalDatabaseManager.STATUS_LOCAL_NEW)) {
                             // Trạng thái: Mới ở Client -> MÀU XANH
-                            setStyle("-fx-background-color: #618a46ff;"); // Xanh lá nhạt
+                            setStyle("-fx-background-color: #98ce75ff;"); // Xanh lá nhạt
                         } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_STALE)) {
                             // Trạng thái: Đã sửa ở Client -> MÀU VÀNG
                             setStyle("-fx-background-color: #d3eb03ff;"); // Vàng nhạt

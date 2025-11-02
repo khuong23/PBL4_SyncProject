@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,11 +23,13 @@ public class DownloadService {
     private final NetworkService networkService;
     private final LocalDatabaseManager localDbManager;
     private final String syncDirectoryPath; // ví dụ: C:\SyncData
+    private final FileHashService fileHashService; // Thêm để tính hash
 
     public DownloadService(NetworkService networkService, LocalDatabaseManager localDbManager, String syncDirectoryPath) {
         this.networkService = networkService;
         this.localDbManager = localDbManager;
         this.syncDirectoryPath = syncDirectoryPath;
+        this.fileHashService = new FileHashService(); // Khởi tạo
     }
 
     public void downloadAndSaveFile(FileItem fileItem) throws Exception {
@@ -89,23 +92,34 @@ public class DownloadService {
             return;
         }
         
-        String sql = "INSERT OR REPLACE INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
-                + "VALUES (?, ?, ?, ?, ?, ?, 'SYNCED')";
-
-        try (Connection conn = localDbManager.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-
-            ps.setInt(1, item.getFileId()); // Server FileID → ServerFileID column
-            ps.setInt(2, localFolderId);    // Local FolderID
-            String originalName = item.getFileName();
-            if (originalName.contains(" ")) originalName = originalName.substring(originalName.indexOf(' ') + 1).trim();
-            ps.setString(3, originalName);
-            // FileSize unknown here - set 0 if missing
-            ps.setLong(4, 0L);
-            ps.setString(5, localPath.replace("\\", "/"));
-            ps.setString(6, serverHash);
-
-            ps.executeUpdate();
+        // --- LỖI ĐÃ SỬA: Tính hash của file vừa tải và lấy thông tin chính xác ---
+        File downloadedFile = new File(localPath);
+        String currentHash = fileHashService.calculateFileHash(downloadedFile);
+        long fileSize = downloadedFile.length();
+        
+        // Lấy tên file gốc (loại bỏ icon nếu có)
+        String originalName = item.getFileName();
+        if (originalName.contains(" ")) {
+            originalName = originalName.substring(originalName.indexOf(' ') + 1).trim();
         }
+        
+        // Chuẩn hóa đường dẫn (dùng /)
+        String relativePath = item.getRelativePath();
+        if (relativePath == null) {
+            relativePath = localPath.replace("\\", "/");
+        }
+        
+        // GỌI HÀM UPSERT MỚI (thay vì SQL thủ công)
+        localDbManager.upsertDownloadedFile(
+                item.getFileId(),     // ServerFileID
+                localFolderId,        // LocalFolderID
+                originalName,         // Tên file
+                fileSize,             // Kích thước chính xác
+                relativePath,         // Đường dẫn tương đối
+                currentHash           // Hash vừa tính (không dùng serverHash)
+        );
+        
+        System.out.println("✅ Đã cập nhật cache sau download: " + relativePath);
+        // --- KẾT THÚC SỬA LỖI ---
     }
 }

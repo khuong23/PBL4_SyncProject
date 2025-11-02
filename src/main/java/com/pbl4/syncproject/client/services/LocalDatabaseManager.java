@@ -252,5 +252,43 @@ public class LocalDatabaseManager {
             e.printStackTrace();
         }
     }
+
+    /**
+     * Ghi đè (Upsert) thông tin file vào CSDL cache sau khi tải về.
+     * Đảm bảo file được đánh dấu là SYNCED và có hash chính xác.
+     * @param serverFileId ID của file trên server
+     * @param localFolderId ID của folder local trong cache
+     * @param fileName Tên file
+     * @param fileSize Kích thước file (bytes)
+     * @param localPath Đường dẫn tương đối (relativePath)
+     * @param fileHash Hash SHA-256 của file vừa tải
+     */
+    public void upsertDownloadedFile(int serverFileId, int localFolderId, String fileName, 
+                                     long fileSize, String localPath, String fileHash) {
+                                         
+        // Câu lệnh này sẽ TẠO MỚI nếu file chưa có, hoặc CẬP NHẬT nếu đã có
+        String sql = "INSERT OR REPLACE INTO Files "
+                   + "(ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
+                   + "VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            ps.setInt(1, serverFileId);
+            ps.setInt(2, localFolderId);
+            ps.setString(3, fileName);
+            ps.setLong(4, fileSize);
+            ps.setString(5, localPath);
+            ps.setString(6, fileHash);
+            ps.setString(7, STATUS_SYNCED); // Đánh dấu là đã đồng bộ
+            
+            ps.executeUpdate();
+            System.out.println("✅ Đã Upsert (Download): " + localPath + " -> SYNCED");
+
+        } catch (SQLException e) {
+            System.err.println("❌ Lỗi khi upsert file đã tải: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
     // ----------------------------------------
 }
