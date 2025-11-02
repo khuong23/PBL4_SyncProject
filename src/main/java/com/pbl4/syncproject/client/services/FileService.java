@@ -62,37 +62,117 @@ public class FileService {
 
     /**
      * Fetch và parse file list từ server theo folder ID cụ thể
+     * (ĐÃ SỬA ĐỔI ĐỂ HỢP NHẤT LOCAL VÀ SERVER - MANUAL SYNC MODE)
      */
     public ObservableList<FileItem> fetchAndParseFileList(int folderId) throws Exception {
         
-        // --- SỬA LẠI: HỖ TRỢ OFFLINE ---
+        // Danh sách file cuối cùng để hiển thị
+        ObservableList<FileItem> finalItems = FXCollections.observableArrayList();
+        // Map để theo dõi file server (Key = Tên file)
+        java.util.Map<String, FileItem> serverFileMap = new java.util.HashMap<>();
+
+        // 1. LẤY FILE TỪ SERVER (NẾU ONLINE)
         if (networkService.isOnline()) {
-            // ONLINE: Lấy từ server và cập nhật cache
             try {
                 Response response = networkService.getFileList(folderId);
                 if (response != null && "success".equals(response.getStatus())) {
-                    ObservableList<FileItem> items = parseFileListResponse(response);
-                    
-                    // Cập nhật cache (chạy nền)
-                    // TODO: Cần cải thiện hàm saveFilesToCache để xử lý dữ liệu thô từ JSON
-                    // saveFilesToCache(folderId, items); 
-                    System.out.println("[Online] Đã tải " + items.size() + " file từ server.");
-                    
-                    return items;
+                    ObservableList<FileItem> serverItems = parseFileListResponse(response);
+                    for (FileItem item : serverItems) {
+                        // Lấy tên file gốc (không icon) làm key
+                        String originalName = item.getFileName();
+                        if (originalName.contains(" ")) {
+                            originalName = originalName.substring(originalName.indexOf(" ") + 1).trim();
+                        }
+                        serverFileMap.put(originalName, item);
+                        finalItems.add(item); // Thêm file server vào danh sách
+                    }
+                    System.out.println("[Online] Đã tải " + serverItems.size() + " file từ server.");
+                } else {
+                    throw new Exception("Server không trả về dữ liệu hợp lệ cho folder ID: " + folderId);
                 }
-                throw new Exception("Server không trả về dữ liệu hợp lệ cho folder ID: " + folderId);
-                
             } catch (Exception e) {
-                // Nếu gọi server lỗi (ví dụ 500), thử đọc từ cache
-                System.err.println("Lỗi khi gọi server, thử đọc từ cache: " + e.getMessage());
-                return getFilesFromCache(folderId);
+                System.err.println("Lỗi khi gọi server (sẽ chỉ hiển thị cache): " + e.getMessage());
+                // Không ném lỗi, tiếp tục để tải cache
             }
-        } else {
-            // OFFLINE: Đọc thẳng từ cache
-            System.out.println("[Offline] Đang đọc files từ cache cho folder " + folderId);
-            return getFilesFromCache(folderId);
         }
-        // ---------------------------------
+
+        // 2. LẤY FILE TỪ CACHE CỤC BỘ (LOCAL_NEW, LOCAL_STALE)
+        int localFolderId = getLocalFolderIdFromServerId(folderId);
+        
+        // Chỉ lấy file Mới hoặc file Sửa
+        String sql = "SELECT * FROM Files WHERE FolderID = ? AND (SyncStatus = ? OR SyncStatus = ?)";
+
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            ps.setInt(1, localFolderId);
+            ps.setString(2, LocalDatabaseManager.STATUS_LOCAL_NEW);
+            ps.setString(3, LocalDatabaseManager.STATUS_LOCAL_STALE);
+            ResultSet rs = ps.executeQuery();
+            
+            while (rs.next()) {
+                String fileName = rs.getString("FileName");
+                String syncStatus = rs.getString("SyncStatus");
+                
+                // Nếu file này cũng có trên server (trường hợp LOCAL_STALE)
+                if (serverFileMap.containsKey(fileName)) {
+                    // File này đã có trong finalItems (từ server), 
+                    // chúng ta chỉ cần tìm và cập nhật trạng thái của nó
+                    for (FileItem item : finalItems) {
+                        String originalName = item.getFileName();
+                        if (originalName.contains(" ")) {
+                            originalName = originalName.substring(originalName.indexOf(" ") + 1).trim();
+                        }
+                        if (originalName.equals(fileName)) {
+                            item.setSyncStatus(syncStatus); // Cập nhật thành "LOCAL_STALE" (Vàng)
+                            item.setRelativePath(rs.getString("LocalPath")); // Quan trọng cho upload
+                            break;
+                        }
+                    }
+                } else {
+                    // File này không có trên server (trường hợp LOCAL_NEW)
+                    // Tạo FileItem mới
+                    String displayName = getFileIcon(fileName) + " " + fileName;
+                    String fileSize = formatFileSize(rs.getLong("FileSize"));
+                    String fileType = getFileType(fileName);
+
+                    FileItem item = new FileItem(
+                            displayName, fileSize, fileType,
+                            "N/A (Local)", "Đọc/Ghi", syncStatus // Trạng thái "LOCAL_NEW" (Xanh)
+                    );
+                    item.setFileId(rs.getInt("FileID")); // ID Cục bộ
+                    item.setFolderId(localFolderId); // ID Cục bộ
+                    item.setRelativePath(rs.getString("LocalPath")); // Quan trọng để upload
+                    finalItems.add(item); // Thêm file local vào danh sách
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Lỗi đọc file cache SQLite: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        System.out.println("[FileService] Tổng cộng " + finalItems.size() + " file (bao gồm local & server)");
+        return finalItems;
+    }
+    
+    /**
+     * Lấy Local FolderID (PK) từ ServerFolderID (UNIQUE)
+     */
+    private int getLocalFolderIdFromServerId(int serverFolderId) {
+        // Tạm thời coi 2 ID là một, nhưng lý tưởng là phải truy vấn
+        // SELECT FolderID FROM Folders WHERE ServerFolderID = ?
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT FolderID FROM Folders WHERE ServerFolderID = ?")) {
+            ps.setInt(1, serverFolderId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                return rs.getInt("FolderID");
+            }
+        } catch (SQLException e) {
+            System.err.println("Lỗi lấy LocalFolderID: " + e.getMessage());
+        }
+        // Fallback: Giả định serverFolderId 1 = localFolderId 1 (root)
+        return serverFolderId;
     }
 
     /**

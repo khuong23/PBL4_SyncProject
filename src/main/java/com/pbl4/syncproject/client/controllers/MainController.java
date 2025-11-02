@@ -585,6 +585,9 @@ public class MainController implements Initializable {
                     downloadFile(fileItem);
                 }
                 break;
+            case "upload":
+                uploadSingleFile(fileItem);
+                break;
             case "edit":
                 editFile(fileItem);
                 break;
@@ -784,6 +787,86 @@ public class MainController implements Initializable {
     private void editFile(FileItem fileItem) {
         // TODO: Implement edit logic
         mainView.setStatusMessage("Chức năng edit sẽ được implement");
+    }
+
+    /**
+     * Upload a single file (manual sync)
+     * Called when user clicks Upload button in UI
+     */
+    private void uploadSingleFile(FileItem fileItem) {
+        try {
+            // 1. Get sync directory from settings
+            SettingsService settingsService = SettingsService.getInstance();
+            String syncDirectory = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, null);
+            
+            if (syncDirectory == null || syncDirectory.isEmpty()) {
+                mainView.showAlert("Lỗi", "Thư mục đồng bộ chưa được thiết lập!", IMainView.AlertType.ERROR);
+                return;
+            }
+
+            // 2. Get relative path and construct full path
+            String relativePath = fileItem.getRelativePath();
+            if (relativePath == null || relativePath.isEmpty()) {
+                mainView.showAlert("Lỗi", "Không tìm thấy đường dẫn file!", IMainView.AlertType.ERROR);
+                return;
+            }
+
+            File localFile = new File(syncDirectory, relativePath);
+            if (!localFile.exists() || !localFile.isFile()) {
+                mainView.showAlert("Lỗi", "File không tồn tại trên máy: " + localFile.getAbsolutePath(), IMainView.AlertType.ERROR);
+                return;
+            }
+
+            // 3. Confirm with user
+            boolean confirmed = mainView.showConfirmDialog(
+                    "Xác nhận upload",
+                    "Bạn có chắc chắn muốn upload file: " + fileItem.getFileName() + " lên server?"
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            // 4. Validate file before upload
+            if (uploadManager != null && !uploadManager.validateFileForUpload(localFile)) {
+                return;
+            }
+
+            // 5. Upload file using UploadManager
+            mainView.setStatusMessage("Đang upload " + fileItem.getFileName() + "...");
+            
+            // Use folderId as string (UploadManager expects currentDirectory as string)
+            String currentDirectory = String.valueOf(fileItem.getFolderId());
+            
+            if (uploadManager != null) {
+                uploadManager.uploadFile(localFile, currentDirectory, new UploadManager.UploadResultCallback() {
+                    @Override
+                    public void onUploadResult(File file, FileItem newFileItem, boolean success, String message) {
+                        if (success) {
+                            // Update cache status to SYNCED
+                            LocalDatabaseManager dbManager = LocalDatabaseManager.getInstance();
+                            dbManager.updateFileStatus(relativePath, LocalDatabaseManager.STATUS_SYNCED);
+                            
+                            // Update status message
+                            mainView.setStatusMessage("✅ Upload thành công: " + fileItem.getFileName());
+                            
+                            // Refresh UI to show updated status
+                            if (currentFolderId > 0) {
+                                loadDirectoryFiles(currentFolderId);
+                            }
+                        } else {
+                            mainView.setStatusMessage("❌ Upload thất bại: " + message);
+                        }
+                    }
+                });
+            } else {
+                mainView.showAlert("Lỗi", "UploadManager chưa được khởi tạo!", IMainView.AlertType.ERROR);
+            }
+
+        } catch (Exception e) {
+            mainView.showAlert("Lỗi", "Lỗi khi upload file: " + e.getMessage(), IMainView.AlertType.ERROR);
+            mainView.setStatusMessage("Lỗi: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     /**

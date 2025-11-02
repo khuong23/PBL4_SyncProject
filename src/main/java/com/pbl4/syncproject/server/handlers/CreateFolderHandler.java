@@ -7,6 +7,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.nio.file.Files;
@@ -95,7 +96,10 @@ public class CreateFolderHandler implements RequestHandler {
                 throw ioEx;
             }
 
-            // 3) Trả về
+            // 3) Ghi lại lịch sử
+            SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_CREATE_FOLDER, null, newId);
+
+            // 4) Trả về
             JsonObject out = new JsonObject();
             out.addProperty("folderId", newId);
             out.addProperty("folderName", folderName);

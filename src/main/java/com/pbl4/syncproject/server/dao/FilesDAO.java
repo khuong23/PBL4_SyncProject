@@ -72,4 +72,34 @@ public final class FilesDAO {
             }
         }
     }
+
+    /**
+     * Lấy file theo FileID (dùng cho Down-Sync)
+     */
+    public static Files getFileById(int fileId) throws SQLException {
+        String sql = "SELECT " + COLS + " FROM Files WHERE FileID = ? LIMIT 1";
+        
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            
+            ps.setInt(1, fileId);
+            
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    Timestamp created = rs.getTimestamp("CreatedAt");
+                    Timestamp last = rs.getTimestamp("LastModified");
+                    return new Files(
+                            rs.getInt("FileID"),
+                            rs.getInt("FolderID"),
+                            rs.getString("FileName"),
+                            rs.getLong("FileSize"),
+                            rs.getString("FileHash"),
+                            created != null ? created.toLocalDateTime() : null,
+                            last != null ? last.toLocalDateTime() : null
+                    );
+                }
+                return null; // File không tồn tại
+            }
+        }
+    }
 }

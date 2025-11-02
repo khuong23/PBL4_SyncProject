@@ -2,6 +2,7 @@ package com.pbl4.syncproject.client.views;
 
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.client.services.FileService;
+import com.pbl4.syncproject.client.services.LocalDatabaseManager;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.common.model.Folders;
 import javafx.application.Platform;
@@ -195,11 +196,13 @@ public class MainView implements IMainView {
         colPermissions.setCellValueFactory(new PropertyValueFactory<>("permissions"));
         colSyncStatus.setCellValueFactory(new PropertyValueFactory<>("syncStatus"));
 
-        // Setup action column with buttons
+        // Setup action column with buttons (MANUAL SYNC MODE)
         colActions.setCellFactory(column -> new TableCell<FileItem, String>() {
-            private final Button downloadBtn = new Button("📥");
-            private final Button editBtn = new Button("✏️");
+            // Tạo cả 3 nút (GIỮ NGUYÊN CẢ 3 NÚT)
+            private final Button downloadBtn = new Button("📥"); // Tải xuống
+            private final Button uploadBtn = new Button("📤");   // Tải lên (thay thế nút Chỉnh sửa)
             private final Button deleteBtn = new Button("🗑️");
+            private final HBox hbox = new HBox(3); // Container
 
             {
                 downloadBtn.setOnAction(e -> {
@@ -209,10 +212,11 @@ public class MainView implements IMainView {
                     }
                 });
 
-                editBtn.setOnAction(e -> {
+                // Nút giữa: UPLOAD (thay thế chức năng Edit)
+                uploadBtn.setOnAction(e -> {
                     FileItem item = getTableView().getItems().get(getIndex());
                     if (onFileDoubleClick != null) {
-                        onFileDoubleClick.onFileAction(item, "edit");
+                        onFileDoubleClick.onFileAction(item, "upload");
                     }
                 });
 
@@ -223,23 +227,86 @@ public class MainView implements IMainView {
                     }
                 });
 
+                // Style các nút
                 downloadBtn.setStyle("-fx-background-radius: 3; -fx-padding: 2 6;");
-                editBtn.setStyle("-fx-background-radius: 3; -fx-padding: 2 6;");
+                uploadBtn.setStyle("-fx-background-radius: 3; -fx-padding: 2 6; -fx-background-color: #e0e7ff;"); // Màu xanh indigo nhạt
                 deleteBtn.setStyle("-fx-background-radius: 3; -fx-padding: 2 6; -fx-background-color: #fecaca;");
+                
+                // Thêm CẢ 3 NÚT vào HBox (luôn hiển thị)
+                hbox.getChildren().addAll(downloadBtn, uploadBtn, deleteBtn);
             }
 
             @Override
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty) {
+                if (empty || getTableRow() == null || getTableRow().getItem() == null) {
                     setGraphic(null);
                 } else {
-                    HBox hbox = new HBox(3);
-                    hbox.getChildren().addAll(downloadBtn, editBtn, deleteBtn);
+                    // Lấy FileItem của hàng hiện tại
+                    FileItem fileItem = getTableRow().getItem();
+                    String status = fileItem.getSyncStatus();
+
+                    // Logic bật/tắt nút dựa trên trạng thái
+                    if (status != null) {
+                        if (status.equals(LocalDatabaseManager.STATUS_LOCAL_NEW)) {
+                            // File mới (Xanh lá) - chưa có trên server
+                            downloadBtn.setDisable(true);  // Không thể tải xuống (chưa có trên server)
+                            uploadBtn.setDisable(false);   // Có thể tải lên
+                        } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_STALE) || 
+                                   status.equals(LocalDatabaseManager.STATUS_CONFLICT)) {
+                            // File sửa (Vàng) hoặc Xung đột (Đỏ)
+                            downloadBtn.setDisable(false); // Có thể tải về phiên bản server (để so sánh)
+                            uploadBtn.setDisable(false);   // Có thể tải lên (ghi đè)
+                        } else {
+                            // File đã đồng bộ (SYNCED)
+                            downloadBtn.setDisable(false); // Có thể tải xuống
+                            uploadBtn.setDisable(true);    // Không cần tải lên (đã đồng bộ)
+                        }
+                    } else {
+                        // Trạng thái không xác định (file từ server, mặc định)
+                        downloadBtn.setDisable(false);
+                        uploadBtn.setDisable(true);
+                    }
+                    
+                    // Nút xóa luôn bật (logic xóa sẽ hỏi lại sau)
+                    deleteBtn.setDisable(false);
+                    
                     setGraphic(hbox);
                 }
             }
         });
+
+        // --- TÔ MÀU HÀNG DỰA TRÊN TRẠNG THÁI (MANUAL SYNC MODE) ---
+        tableFiles.setRowFactory(tv -> new TableRow<FileItem>() {
+            @Override
+            protected void updateItem(FileItem item, boolean empty) {
+                super.updateItem(item, empty);
+                
+                // Luôn reset style về mặc định
+                setStyle(""); 
+                
+                if (item == null || empty) {
+                    // Hàng trống, không làm gì
+                } else {
+                    String status = item.getSyncStatus();
+                    
+                    if (status != null) {
+                        if (status.equals(LocalDatabaseManager.STATUS_LOCAL_NEW)) {
+                            // Trạng thái: Mới ở Client -> MÀU XANH
+                            setStyle("-fx-background-color: #dcfce7;"); // Xanh lá nhạt
+                        } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_STALE)) {
+                            // Trạng thái: Đã sửa ở Client -> MÀU VÀNG
+                            setStyle("-fx-background-color: #fef9c3;"); // Vàng nhạt
+                        } else if (status.equals(LocalDatabaseManager.STATUS_CONFLICT)) {
+                            // Trạng thái: Xung đột -> MÀU ĐỎ
+                            setStyle("-fx-background-color: #fee2e2;"); // Đỏ nhạt
+                        }
+                        // Nếu là SYNCED hoặc khác, sẽ dùng style mặc định (không màu)
+                    }
+                }
+            }
+        });
+        // --- KẾT THÚC ĐOẠN MÃ TÔ MÀU ---
 
         // Selection listener
         tableFiles.getSelectionModel().selectedItemProperty().addListener((obs, oldSelection, newSelection) -> {

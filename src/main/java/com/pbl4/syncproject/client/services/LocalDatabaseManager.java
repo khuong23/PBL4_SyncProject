@@ -16,6 +16,15 @@ public class LocalDatabaseManager {
 
     private static LocalDatabaseManager instance;
     private static final String DB_URL = "jdbc:sqlite:client_cache.db";
+    
+    // --- ĐỊNH NGHĨA CÁC TRẠNG THÁI ĐỒNG BỘ ---
+    public static final String STATUS_SYNCED = "SYNCED";           // Đã đồng bộ (trùng khớp server)
+    public static final String STATUS_LOCAL_NEW = "LOCAL_NEW";     // File mới chỉ có ở client (màu XANH)
+    public static final String STATUS_LOCAL_STALE = "LOCAL_STALE"; // File đã sửa ở client (màu VÀNG)
+    public static final String STATUS_SERVER_NEW = "SERVER_NEW";   // File mới chỉ có ở server
+    public static final String STATUS_CONFLICT = "CONFLICT";       // Xung đột (màu ĐỎ)
+    public static final String STATUS_LOCAL_DELETED = "LOCAL_DELETED"; // File đã xóa ở client
+    // ------------------------------------------
 
     private LocalDatabaseManager() {
         // Tải driver
@@ -190,6 +199,30 @@ public class LocalDatabaseManager {
             ps.setString(1, String.valueOf(timestamp.getTime()));
             ps.executeUpdate();
         } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Cập nhật trạng thái đồng bộ của file trong cache.
+     * @param localPath Đường dẫn tương đối của file (relativePath)
+     * @param newStatus Trạng thái mới (STATUS_SYNCED, STATUS_LOCAL_NEW, etc.)
+     */
+    public void updateFileStatus(String localPath, String newStatus) {
+        String sql = "UPDATE Files SET SyncStatus = ? WHERE LocalPath = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newStatus);
+            ps.setString(2, localPath);
+            int rowsAffected = ps.executeUpdate();
+            
+            if (rowsAffected > 0) {
+                System.out.println("✅ Đã cập nhật trạng thái file: " + localPath + " -> " + newStatus);
+            } else {
+                System.out.println("⚠️ Không tìm thấy file trong cache: " + localPath);
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ Lỗi khi cập nhật trạng thái file: " + e.getMessage());
             e.printStackTrace();
         }
     }

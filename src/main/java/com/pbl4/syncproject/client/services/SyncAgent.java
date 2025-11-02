@@ -37,6 +37,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     // --- THÊM DÒNG NÀY ---
     private final LocalDatabaseManager localDbManager;
     private final NotificationManager notificationManager = NotificationManager.getInstance(); // BƯỚC 7.4
+    private DownloadService downloadService; // Sẽ được khởi tạo trong start()
     // -----------------------
     
     // Sync configuration
@@ -95,6 +96,9 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         if (!dir.exists()) {
             dir.mkdirs();
         }
+        
+        // Khởi tạo DownloadService
+        this.downloadService = new DownloadService(networkService, localDbManager, syncDirectoryPath);
         
         // --- THÊM DÒNG NÀY ---
         // 1. Quét các file đã có (như test.txt) và thêm vào SyncQueue
@@ -292,6 +296,10 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /**
      * Xử lý thay đổi File (tên mới của hàm ở Bước 4)
      */
+    /**
+     * Xử lý thay đổi File - PHIÊN BẢN ĐỒNG BỘ THỦ CÔNG
+     * (CHỈ PHÁT HIỆN VÀ ĐÁN DẤNG, KHÔNG TỰ ĐỘNG UPLOAD)
+     */
     private void processFileChangeInternal(Path filePath, SyncOperation operation) {
         String relativePath = syncDirectory.relativize(filePath).toString();
         String sqlPath = relativePath.replace("\\", "/"); 
@@ -299,69 +307,73 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
         try (Connection conn = localDbManager.getConnection()) {
             
-            // --- XỬ LÝ TẠO MỚI / SỬA FILE ---
             if (!file.exists()) return; // File có thể đã bị xóa ngay sau khi tạo
 
             // 1. Tính hash mới của file
             String currentHash = hashService.calculateFileHash(file);
             if (currentHash == null) return; // Lỗi tính hash
 
-            // 2. Lấy hash cũ (nếu có) từ CSDL SQLite
+            // 2. Lấy hash cũ (nếu có) và trạng thái từ CSDL SQLite
             String lastHash = null;
-            String sqlSelect = "SELECT LastKnownHash FROM Files WHERE LocalPath = ?";
+            String oldStatus = null;
+            int fileId = -1;
+            
+            String sqlSelect = "SELECT FileID, LastKnownHash, SyncStatus FROM Files WHERE LocalPath = ?";
             try (PreparedStatement psSelect = conn.prepareStatement(sqlSelect)) {
                 psSelect.setString(1, sqlPath);
                 ResultSet rs = psSelect.executeQuery();
                 if (rs.next()) {
+                    fileId = rs.getInt("FileID");
                     lastHash = rs.getString("LastKnownHash");
+                    oldStatus = rs.getString("SyncStatus");
                 }
             }
 
-            // 3. So sánh hash
-            if (currentHash.equals(lastHash)) {
-                System.out.println("[Offline Watcher] Bỏ qua (hash không đổi): " + sqlPath);
-                return; // Hash giống hệt, không cần đồng bộ
+            // 3. Quyết định trạng thái mới
+            String newStatus = oldStatus;
+            if (lastHash == null) {
+                newStatus = LocalDatabaseManager.STATUS_LOCAL_NEW; // File hoàn toàn mới (XANH)
+                System.out.println("[SyncAgent] Phát hiện file mới: " + sqlPath);
+            } else if (!currentHash.equals(lastHash)) {
+                newStatus = LocalDatabaseManager.STATUS_LOCAL_STALE; // File đã bị sửa (VÀNG)
+                System.out.println("[SyncAgent] Phát hiện file sửa: " + sqlPath);
+            } else {
+                System.out.println("[SyncAgent] Bỏ qua (hash không đổi): " + sqlPath);
+                return; // Không thay đổi, không cần làm gì
             }
-
-            System.out.println("[Offline Watcher] Đã phát hiện thay đổi FILE: " + sqlPath);
 
             // 4. Tìm hoặc tạo FolderID cho thư mục cha
             Path parentFolder = filePath.getParent();
             int folderId = getOrCreateFolderId(parentFolder, conn);
 
-            // 5. Cập nhật CSDL cục bộ (UPSERT)
-            // --- BƯỚC 7.1: GIỮ LastKnownHash (hash gốc) để phát hiện xung đột ---
-            // Chúng ta KHÔNG cập nhật LastKnownHash nữa, chỉ cập nhật các thông tin khác
-            // và đánh dấu là LOCAL_MODIFIED.
+            // 5. Cập nhật CSDL cục bộ (UPSERT) - GIỮ NGUYÊN LastKnownHash cũ
             String sqlUpsertFile = "INSERT OR REPLACE INTO Files "
                     + "(FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
-                    + "VALUES ("
-                    + " (SELECT FileID FROM Files WHERE LocalPath = ?), " // Giữ FileID cũ (nếu có)
-                    + " ?, " // --- SỬA: Dùng folderId từ getOrCreateFolderId() ---
-                    + " ?, ?, ?, "
-                    + " (SELECT LastKnownHash FROM Files WHERE LocalPath = ?), " // --- QUAN TRỌNG: Giữ LastKnownHash cũ ---
-                    + " 'LOCAL_MODIFIED'" // Đánh dấu là đã sửa
-                    + ");";
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?)";
             
             try (PreparedStatement psUpsert = conn.prepareStatement(sqlUpsertFile)) {
-                psUpsert.setString(1, sqlPath);
-                psUpsert.setInt(2, folderId); // --- SỬA: Dùng folderId ---
+                if (fileId > 0) {
+                    psUpsert.setInt(1, fileId); // Giữ FileID cũ (nếu có)
+                } else {
+                    psUpsert.setNull(1, java.sql.Types.INTEGER); // Để CSDL tự tăng
+                }
+                psUpsert.setInt(2, folderId);
                 psUpsert.setString(3, file.getName());
                 psUpsert.setLong(4, file.length());
                 psUpsert.setString(5, sqlPath);
-                psUpsert.setString(6, sqlPath); // Tham số cho (SELECT LastKnownHash...)
+                psUpsert.setString(6, lastHash); // GIỮ NGUYÊN hash CŨ (hoặc null nếu file mới)
+                psUpsert.setString(7, newStatus); // Đặt trạng thái mới (XANH hoặc VÀNG)
                 psUpsert.executeUpdate();
             }
 
-            // 5. Thêm vào hàng đợi (Queue) để upload khi online
-            String sqlQueue = "INSERT OR REPLACE INTO SyncQueue (Action, LocalPath) VALUES ('UPLOAD', ?)";
-            try (PreparedStatement psQueue = conn.prepareStatement(sqlQueue)) {
-                psQueue.setString(1, sqlPath);
-                psQueue.executeUpdate();
-            }
-
+            // 6. (QUAN TRỌNG) KHÔNG THÊM VÀO SYNCQUEUE - Đồng bộ thủ công
+            // BỎ DÒNG NÀY:
+            // String sqlQueue = "INSERT OR REPLACE INTO SyncQueue (Action, LocalPath) VALUES ('UPLOAD', ?)";
+            
+            System.out.println("[SyncAgent] ✓ Đã cập nhật trạng thái: " + newStatus + " cho file: " + sqlPath);
+            
         } catch (Exception e) {
-            System.err.println("Lỗi xử lý thay đổi file offline: " + e.getMessage());
+            System.err.println("Lỗi xử lý thay đổi file (manual mode): " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -822,7 +834,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         case "FILE_DELETED":
                             handleServerFileDelete(data);
                             break;
-                        // TODO: Thêm case cho FOLDER_MODIFIED, FOLDER_DELETED
+                        case "FOLDER_MODIFIED":
+                            handleServerFolderUpdate(data);
+                            break;
+                        case "FOLDER_DELETED":
+                            handleServerFolderDelete(data);
+                            break;
                         default:
                             System.out.println("⚠️ Type chưa được hỗ trợ: " + type);
                     }
@@ -849,88 +866,253 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /**
      * Xử lý khi server báo 1 file bị SỬA/TẠO MỚI.
      */
-    private void handleServerFileUpdate(JsonObject data) throws SQLException {
-        int fileId = data.get("FileID").getAsInt();
-        String fileName = data.get("FileName").getAsString();
-        String fileHash = data.get("FileHash").getAsString();
-        
-        // TODO: Cần có logic để xác định đường dẫn cục bộ (LocalPath)
-        // Bạn cần xây dựng 1 hàm getLocalPath(fileId)
-        String localPath = "temp/" + fileName; // Tạm thời
-        
-        System.out.println("Down-sync: Tải về " + fileName);
-        
-        // 1. Tải file về (sử dụng DownloadFileHandler)
-        boolean downloaded = networkService.downloadFile(fileId, syncDirectory.resolve(localPath));
+    private void handleServerFileUpdate(JsonObject data) {
+        try {
+            int fileId = data.get("FileID").getAsInt();
+            String fileName = data.get("FileName").getAsString();
+            int folderId = data.get("FolderID").getAsInt();
+            
+            System.out.println("[Down-Sync] Tải về: " + fileName + " (ID: " + fileId + ")");
+            
+            // Lấy relativePath từ server
+            String relativePath = data.has("relativePath") ? data.get("relativePath").getAsString() : fileName;
 
-        if (downloaded) {
-            // 2. Cập nhật CSDL SQLite
-            // TODO: Cần map ServerFolderID → local FolderID
-            // Hiện tại tạm thời tìm FolderID local dựa trên ServerFolderID
-            int serverFolderId = data.get("FolderID").getAsInt();
-            Integer localFolderId = null;
+            // Tạo FileItem để DownloadService sử dụng
+            com.pbl4.syncproject.client.models.FileItem itemToDownload = new com.pbl4.syncproject.client.models.FileItem();
+            itemToDownload.setFileId(fileId);
+            itemToDownload.setFolderId(folderId);
+            itemToDownload.setFileName(fileName);
+            itemToDownload.setRelativePath(relativePath);
+
+            // Tải file về (DownloadService sẽ tự lưu file và cập nhật cache)
+            downloadService.downloadAndSaveFile(itemToDownload);
             
-            String sqlFindFolder = "SELECT FolderID FROM Folders WHERE ServerFolderID = ?";
-            try (Connection conn = localDbManager.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sqlFindFolder)) {
-                ps.setInt(1, serverFolderId);
-                ResultSet rs = ps.executeQuery();
-                if (rs.next()) {
-                    localFolderId = rs.getInt("FolderID");
-                }
-            }
-            
-            if (localFolderId == null) {
-                System.err.println("⚠️ Không tìm thấy FolderID local cho ServerFolderID=" + serverFolderId);
-                return;
-            }
-            
-            String sql = "INSERT OR REPLACE INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
-                       + "VALUES (?, ?, ?, ?, ?, ?, 'SYNCED')";
-            try (Connection conn = localDbManager.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sql)) {
-                
-                ps.setInt(1, fileId); // Lưu server FileID vào ServerFileID
-                ps.setInt(2, localFolderId); // Dùng local FolderID
-                ps.setString(3, fileName);
-                ps.setLong(4, data.get("FileSize").getAsLong());
-                ps.setString(5, localPath);
-                ps.setString(6, fileHash);
-                ps.executeUpdate();
-            }
+            notificationManager.addNotification(
+                "Đã tải về phiên bản mới của file: " + fileName,
+                com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+            );
+
+        } catch (Exception e) {
+            System.err.println("Lỗi handleServerFileUpdate: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
     /**
      * Xử lý khi server báo 1 file bị XÓA.
+     * (PHIÊN BẢN ĐÃ SỬA LỖI XUNG ĐỘT - Local Modify vs. Remote Delete)
      */
-    private void handleServerFileDelete(JsonObject data) throws Exception {
-        int serverFileId = data.get("FileID").getAsInt();
-        System.out.println("Down-sync: Xóa file ServerFileID " + serverFileId);
-        
-        // 1. Tìm file trong CSDL cục bộ dựa trên ServerFileID
-        String localPath = null;
-        String sqlFind = "SELECT LocalPath FROM Files WHERE ServerFileID = ?";
-        try (Connection conn = localDbManager.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sqlFind)) {
-            ps.setInt(1, serverFileId);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                localPath = rs.getString("LocalPath");
-            }
-        }
-        
-        // 2. Xóa file vật lý
-        if (localPath != null) {
-            Files.deleteIfExists(syncDirectory.resolve(localPath));
+    private void handleServerFileDelete(JsonObject data) {
+        try {
+            int serverFileId = data.get("FileID").getAsInt();
+            System.out.println("[Down-Sync] Nhận lệnh xóa file ServerFileID " + serverFileId);
+
+            // 1. Tìm file trong CSDL cục bộ VÀ KIỂM TRA TRẠNG THÁI
+            String localPathStr = null;
+            String syncStatus = null;
             
-            // 3. Xóa khỏi CSDL cục bộ
-            String sqlDelete = "DELETE FROM Files WHERE ServerFileID = ?";
+            String sqlFind = "SELECT LocalPath, SyncStatus FROM Files WHERE ServerFileID = ?";
             try (Connection conn = localDbManager.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(sqlDelete)) {
+                 PreparedStatement ps = conn.prepareStatement(sqlFind)) {
                 ps.setInt(1, serverFileId);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    localPathStr = rs.getString("LocalPath");
+                    syncStatus = rs.getString("SyncStatus");
+                }
+            }
+
+            // 2. KIỂM TRA XUNG ĐỘT (Local Modify vs. Remote Delete)
+            if ("LOCAL_MODIFIED".equals(syncStatus)) {
+                // *** PHÁT HIỆN XUNG ĐỘT ***
+                System.out.println("⚠️ XUNG ĐỘT: Server muốn xóa file " + localPathStr + 
+                                   " nhưng file này đã bị sửa cục bộ.");
+                
+                // QUYẾT ĐỊNH: KHÔNG XÓA. Phiên bản cục bộ thắng.
+                // Hàng đợi SyncQueue đã có tác vụ 'UPLOAD' cho file này,
+                // khi nó chạy, file sẽ được tải lên lại và "phục hồi" (undelete) trên server.
+                
+                notificationManager.addNotification(
+                    "⚠️ Xung đột: File '" + localPathStr + "' bạn đang sửa đã bị xóa ở nơi khác. Đã giữ lại phiên bản của bạn.",
+                    com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+                );
+                
+                // TODO: Có thể đánh dấu lại file là 'CONFLICT' hoặc giữ nguyên 'LOCAL_MODIFIED'
+                // để đảm bảo nó được upload lại. 
+                // Hiện tại, nó đã là LOCAL_MODIFIED nên hàng đợi sẽ tự xử lý.
+                
+                return; // KHÔNG XÓA FILE
+
+            } else if (localPathStr != null) {
+                // 3. KHÔNG XUNG ĐỘT (ví dụ: status là 'SYNCED')
+                // Tiến hành xóa bình thường.
+                Path localPath = syncDirectory.resolve(localPathStr);
+                Files.deleteIfExists(localPath);
+                
+                // 3b. Xóa khỏi CSDL cục bộ
+                String sqlDelete = "DELETE FROM Files WHERE ServerFileID = ?";
+                try (Connection conn = localDbManager.getConnection();
+                     PreparedStatement ps = conn.prepareStatement(sqlDelete)) {
+                    ps.setInt(1, serverFileId);
+                    ps.executeUpdate();
+                }
+                
+                notificationManager.addNotification(
+                    "File đã bị xóa bởi người dùng khác: " + localPath.getFileName(),
+                    com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+                );
+            }
+
+        } catch (Exception e) {
+            System.err.println("Lỗi handleServerFileDelete: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Xử lý khi server báo 1 THƯ MỤC bị SỬA/TẠO MỚI.
+     */
+    private void handleServerFolderUpdate(JsonObject data) {
+        try {
+            int serverFolderId = data.get("FolderID").getAsInt();
+            String folderName = data.get("FolderName").getAsString();
+            String relativePath = data.has("relativePath") ? data.get("relativePath").getAsString() : folderName;
+            
+            System.out.println("[Down-Sync] Tạo thư mục: " + relativePath);
+
+            // 1. Tạo thư mục vật lý trên đĩa
+            Path localPath = syncDirectory.resolve(relativePath);
+            Files.createDirectories(localPath);
+
+            // 2. Cập nhật CSDL cục bộ
+            Integer serverParentFolderId = data.has("ParentFolderID") && !data.get("ParentFolderID").isJsonNull() 
+                                          ? data.get("ParentFolderID").getAsInt() 
+                                          : null;
+            
+            // Tìm LocalParentFolderID dựa trên ServerParentFolderID
+            Integer localParentId = null;
+            if (serverParentFolderId != null) {
+                String sqlFindParent = "SELECT FolderID FROM Folders WHERE ServerFolderID = ?";
+                try (Connection conn = localDbManager.getConnection();
+                     PreparedStatement ps = conn.prepareStatement(sqlFindParent)) {
+                    ps.setInt(1, serverParentFolderId);
+                    ResultSet rs = ps.executeQuery();
+                    if (rs.next()) {
+                        localParentId = rs.getInt("FolderID");
+                    }
+                }
+            }
+            
+            String sqlUpsert = "INSERT OR REPLACE INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) "
+                             + "VALUES (?, ?, ?, ?, 'SYNCED')";
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sqlUpsert)) {
+                
+                ps.setInt(1, serverFolderId);
+                if (localParentId != null) {
+                    ps.setInt(2, localParentId);
+                } else {
+                    ps.setNull(2, java.sql.Types.INTEGER);
+                }
+                ps.setString(3, folderName);
+                ps.setString(4, relativePath);
                 ps.executeUpdate();
             }
+        } catch (Exception e) {
+            System.err.println("Lỗi handleServerFolderUpdate: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Xử lý khi server báo 1 THƯ MỤC bị XÓA.
+     * (PHIÊN BẢN ĐÃ SỬA LỖI XUNG ĐỘT - Kiểm tra file đang sửa trong thư mục)
+     */
+    private void handleServerFolderDelete(JsonObject data) {
+        try {
+            int serverFolderId = data.get("FolderID").getAsInt();
+            System.out.println("[Down-Sync] Nhận lệnh xóa thư mục ServerFolderID " + serverFolderId);
+            
+            // 1. Tìm thư mục trong CSDL cục bộ
+            String localPathStr = null;
+            String sqlFind = "SELECT LocalPath FROM Folders WHERE ServerFolderID = ?";
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sqlFind)) {
+                ps.setInt(1, serverFolderId);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    localPathStr = rs.getString("LocalPath");
+                }
+            }
+            
+            if (localPathStr == null) {
+                return; // Thư mục không tồn tại trong cache
+            }
+            
+            // 2. KIỂM TRA XUNG ĐỘT: Có file nào đang được sửa trong thư mục này không?
+            boolean hasLocalModified = false;
+            String sqlCheckFiles = "SELECT COUNT(*) FROM Files " +
+                                   "WHERE FolderID IN (" +
+                                   "  SELECT FolderID FROM Folders WHERE ServerFolderID = ?" +
+                                   ") AND SyncStatus = 'LOCAL_MODIFIED'";
+            
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sqlCheckFiles)) {
+                ps.setInt(1, serverFolderId);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next() && rs.getInt(1) > 0) {
+                    hasLocalModified = true;
+                }
+            }
+            
+            if (hasLocalModified) {
+                // *** PHÁT HIỆN XUNG ĐỘT ***
+                System.out.println("⚠️ XUNG ĐỘT: Server muốn xóa thư mục " + localPathStr + 
+                                   " nhưng có file đang được sửa bên trong.");
+                
+                notificationManager.addNotification(
+                    "⚠️ Xung đột: Thư mục '" + localPathStr + "' có file bạn đang sửa đã bị xóa ở nơi khác. Đã giữ lại các file của bạn.",
+                    com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+                );
+                
+                // KHÔNG XÓA thư mục. Các file LOCAL_MODIFIED sẽ được upload lại.
+                return;
+            }
+            
+            // 3. KHÔNG XUNG ĐỘT - Xóa thư mục vật lý
+            Path localPath = syncDirectory.resolve(localPathStr);
+            
+            // Xóa đệ quy (an toàn) - Xóa tất cả file trong thư mục trước
+            if (Files.exists(localPath)) {
+                Files.walk(localPath)
+                    .sorted((a, b) -> -a.compareTo(b)) // Đảo ngược để xóa file trước, folder sau
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception e) {
+                            System.err.println("Không thể xóa: " + path + " - " + e.getMessage());
+                        }
+                    });
+            }
+            
+            // 4. Xóa khỏi CSDL cục bộ
+            // Giả định CSDL SQLite có 'ON DELETE CASCADE'
+            // hoặc chúng ta xóa thủ công file/folder con
+            String sqlDelete = "DELETE FROM Folders WHERE ServerFolderID = ?";
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sqlDelete)) {
+                ps.setInt(1, serverFolderId);
+                ps.executeUpdate();
+            }
+            
+            notificationManager.addNotification(
+                "Thư mục đã bị xóa bởi người dùng khác: " + localPathStr,
+                com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+            );
+            
+        } catch (Exception e) {
+            System.err.println("Lỗi handleServerFolderDelete: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 

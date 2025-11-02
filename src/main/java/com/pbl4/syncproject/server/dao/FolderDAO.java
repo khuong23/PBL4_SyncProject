@@ -99,6 +99,34 @@ public class FolderDAO {
     }
 
     /**
+     * Lấy một folder theo ID
+     */
+    public Folders getFolderById(int folderId) throws SQLException {
+        String sql = "SELECT f.*, " +
+                     "(EXISTS (SELECT 1 FROM Folders fc WHERE fc.ParentFolderID = f.FolderID)) AS hasChildren " +
+                     "FROM Folders f WHERE f.FolderID = ? LIMIT 1";
+
+        try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
+            stm.setInt(1, folderId);
+            try (ResultSet rs = stm.executeQuery()) {
+                if (rs.next()) {
+                    Timestamp tsLastModified = rs.getTimestamp("LastModified");
+                    Folders folder = new Folders(
+                            rs.getInt("FolderID"),
+                            rs.getString("FolderName"),
+                            (Integer) rs.getObject("ParentFolderID"),
+                            rs.getTimestamp("CreatedAt").toLocalDateTime(),
+                            tsLastModified != null ? tsLastModified.toLocalDateTime() : null
+                    );
+                    folder.setHasChildren(rs.getBoolean("hasChildren"));
+                    return folder;
+                }
+            }
+        }
+        return null; // Không tìm thấy
+    }
+
+    /**
      * Lấy đường dẫn tương đối (ví dụ: "shared/reports") từ FolderID.
      * Trả về "" (chuỗi rỗng) cho thư mục gốc (ID=1).
      */

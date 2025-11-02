@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.nio.file.Files;
@@ -60,6 +61,9 @@ public class DeleteFileHandler implements RequestHandler {
                 int rows = ps.executeUpdate();
                 if (rows == 0) return err("Xoá DB thất bại (FileID=" + meta.fileId + ")");
             }
+
+            // Ghi lại lịch sử hành động xóa
+            SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_DELETE_FILE, meta.fileId, meta.folderId);
 
             JsonObject out = new JsonObject();
             out.addProperty("fileId", meta.fileId);

@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
+import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.UserDAO;
 
 import java.io.IOException;
@@ -75,6 +76,9 @@ public class DeleteFolderHandler implements RequestHandler {
 
             // DB: xoá 1 dòng, phần còn lại CASCADE
             deleteFolderRow(conn, folderId);
+            
+            // Ghi lại lịch sử hành động xóa thư mục
+            SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_DELETE_FOLDER, null, folderId);
 
             JsonObject out = new JsonObject();
             out.addProperty("folderId", folderId);

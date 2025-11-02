@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.UserDAO;
 import com.pbl4.syncproject.server.dao.FilesDAO; // --- BƯỚC 7.2: THÊM IMPORT ---
+import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 // Không import com.pbl4.syncproject.common.model.Files để tránh xung đột với java.nio.file.Files
 import com.pbl4.syncproject.common.storage.StorageManager;
 
@@ -113,12 +114,16 @@ public class UploadFileHandler implements RequestHandler {
             long fileSize = Files.size(dst);
             String fileHash = computeSHA256(fileBytes);
             Timestamp lastModified = new Timestamp(Files.getLastModifiedTime(dst).toMillis());
+            
+            boolean isUpdate = existingFile != null; // Cờ xác định đây là UPDATE hay UPLOAD mới
+            int newFileId = -1; // Biến để lưu FileID
 
             // 4) Upsert DB: yêu cầu UNIQUE(FolderID, FileName)
             try (PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO Files (FolderID, FileName, FileSize, FileHash, LastModified) " +
                             "VALUES (?,?,?,?,?) " +
-                            "ON DUPLICATE KEY UPDATE FileSize=VALUES(FileSize), FileHash=VALUES(FileHash), LastModified=VALUES(LastModified)"
+                            "ON DUPLICATE KEY UPDATE FileSize=VALUES(FileSize), FileHash=VALUES(FileHash), LastModified=VALUES(LastModified)",
+                    Statement.RETURN_GENERATED_KEYS
             )) {
                 ps.setInt(1, folderId);
                 ps.setString(2, fileName);
@@ -126,10 +131,28 @@ public class UploadFileHandler implements RequestHandler {
                 ps.setString(4, fileHash);
                 ps.setTimestamp(5, lastModified);
                 ps.executeUpdate();
+                
+                // Lấy FileID sau khi upsert
+                if (isUpdate) {
+                    newFileId = existingFile.getFileId(); // Nếu là update, dùng ID cũ
+                } else {
+                    try (ResultSet keys = ps.getGeneratedKeys()) { // Nếu là insert, lấy ID mới
+                        if (keys.next()) {
+                            newFileId = keys.getInt(1);
+                        }
+                    }
+                }
             }
 
-            // 5) Trả data cho client
+            // 5) Ghi lại lịch sử
+            if (newFileId > 0) {
+                String action = isUpdate ? SyncHistoryDAO.ACTION_UPDATE_FILE : SyncHistoryDAO.ACTION_UPLOAD_FILE;
+                SyncHistoryDAO.logAction(userId, action, newFileId, folderId);
+            }
+
+            // 6) Trả data cho client
             JsonObject out = new JsonObject();
+            out.addProperty("fileId", newFileId); // Trả về ID
             out.addProperty("folderId", folderId);
             out.addProperty("fileName", fileName);
             out.addProperty("size", fileSize);
