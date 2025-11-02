@@ -48,7 +48,7 @@ import java.util.ResourceBundle;
  * Chỉ chịu trách nhiệm: Coordinate giữa View và Services, handle UI events
  * Tất cả business logic được delegate cho các Service classes
  */
-public class MainController implements Initializable {
+public class MainController implements Initializable, SyncAgent.SyncEventListener {
 
     // FXML UI Components
     @FXML private Label lblUserInfo;
@@ -502,6 +502,10 @@ public class MainController implements Initializable {
             String syncDir = this.syncDirectoryPath; // Sử dụng đường dẫn từ cài đặt
             // -------------------------------------------------------------------------------
             
+            // --- ĐĂNG KÝ LISTENER ĐỂ NHẬN THÔNG BÁO TỪ SYNCAGENT ---
+            syncAgent.setEventListener(this);
+            // --------------------------------------------------------
+            
             syncAgent.start(syncDir);
             System.out.println("✅ Started sync agent for directory: " + syncDir);
             updateSyncAgentStatus();
@@ -532,6 +536,28 @@ public class MainController implements Initializable {
     private void updateSyncStatus() {
         mainView.setSyncStatus("Đồng bộ: Hoạt động", true);
     }
+
+    // --- IMPLEMENT SYNCAGENT.SYNCEVENTLISTENER ---
+    /**
+     * Callback từ SyncAgent khi có thay đổi local được phát hiện
+     * Method này được gọi từ background thread, nên phải dùng Platform.runLater
+     */
+    @Override
+    public void onLocalChangeDetected() {
+        // Chuyển sang UI thread để cập nhật giao diện
+        Platform.runLater(() -> {
+            System.out.println("🔄 [MainController] Nhận tín hiệu thay đổi local, đang refresh UI...");
+            
+            // Refresh lại danh sách file để hiển thị màu mới
+            if (currentFolderId > 0) {
+                loadDirectoryFiles(currentFolderId);
+            }
+            
+            // Cập nhật status message
+            mainView.setStatusMessage("📝 Phát hiện thay đổi file local");
+        });
+    }
+    // ----------------------------------------------
 
     // === EVENT HANDLERS ===
 

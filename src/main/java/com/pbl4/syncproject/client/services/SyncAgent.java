@@ -28,11 +28,24 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
  */
 public class SyncAgent implements FileWatcherService.FileChangeListener {
     
+    // --- THÊM INTERFACE ĐỂ THÔNG BÁO CHO UI ---
+    /**
+     * Interface để thông báo cho UI khi có thay đổi local
+     */
+    public interface SyncEventListener {
+        void onLocalChangeDetected(); // Báo rằng CSDL local đã thay đổi
+    }
+    // -------------------------------------------
+    
     private final FileWatcherService fileWatcher;
     private final FileHashService hashService;
     private final NetworkService networkService;
     @SuppressWarnings("unused")
     private final UploadManager uploadManager;
+    
+    // --- THÊM BIẾN LISTENER ---
+    private SyncEventListener eventListener = null;
+    // --------------------------
     
     // --- THÊM DÒNG NÀY ---
     private final LocalDatabaseManager localDbManager;
@@ -80,6 +93,13 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         fileWatcher.addListener(this);
     }
     // ---------------------------------
+    
+    /**
+     * Đăng ký listener để nhận thông báo khi có thay đổi local
+     */
+    public void setEventListener(SyncEventListener listener) {
+        this.eventListener = listener;
+    }
     
     /**
      * Start sync agent với sync directory
@@ -371,6 +391,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             // String sqlQueue = "INSERT OR REPLACE INTO SyncQueue (Action, LocalPath) VALUES ('UPLOAD', ?)";
             
             System.out.println("[SyncAgent] ✓ Đã cập nhật trạng thái: " + newStatus + " cho file: " + sqlPath);
+            
+            // --- THÊM: Thông báo cho UI để refresh ---
+            if (eventListener != null) {
+                eventListener.onLocalChangeDetected();
+            }
+            // ------------------------------------------
             
         } catch (Exception e) {
             System.err.println("Lỗi xử lý thay đổi file (manual mode): " + e.getMessage());
