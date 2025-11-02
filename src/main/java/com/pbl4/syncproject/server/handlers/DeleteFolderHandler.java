@@ -28,20 +28,24 @@ public class DeleteFolderHandler implements RequestHandler {
             // Lấy userId để kiểm tra quyền
             int userId = UserDAO.getUserIdFromRequest(req);
             if (userId <= 0) {
-                return err("Không xác định được người dùng");
+                return err("Cần xác thực người dùng (userId không hợp lệ)");
             }
             
             int folderId = data.get("folderId").getAsInt();
             boolean recursive = data.has("recursive") && !data.get("recursive").isJsonNull()
                     && data.get("recursive").getAsBoolean();
 
+            // Kiểm tra các điều kiện cơ bản
             if (folderId == ROOT_ID) return err("Không thể xoá thư mục gốc (ID=1)");
-            if (!folderExists(conn, folderId)) return err("Folder không tồn tại (ID=" + folderId + ")");
-
-            // Kiểm tra quyền DELETE trên folder
+            
+            // QUAN TRỌNG: Kiểm tra quyền TRƯỚC KHI kiểm tra folder tồn tại
+            // (để tránh leak thông tin về folder của người khác)
             if (!UserDAO.hasFolderPermission(userId, folderId, "DELETE")) {
-                return err("Bạn không có quyền xóa (delete) thư mục này.");
+                return err("Bạn không có quyền xóa (DELETE) thư mục này.");
             }
+            
+            // Sau khi đã xác nhận có quyền, mới kiểm tra folder có tồn tại
+            if (!folderExists(conn, folderId)) return err("Folder không tồn tại (ID=" + folderId + ")");
 
             // Resolve đường dẫn vật lý một lần
             Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, folderId);
