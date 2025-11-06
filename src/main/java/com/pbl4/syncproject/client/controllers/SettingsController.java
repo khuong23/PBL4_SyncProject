@@ -1,9 +1,12 @@
 package com.pbl4.syncproject.client.controllers;
 
+import com.pbl4.syncproject.client.services.SyncAgent;
+import javafx.application.Platform;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
 import javafx.scene.control.*;
 import javafx.stage.DirectoryChooser;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
 
 import java.io.File;
@@ -69,6 +72,8 @@ public class SettingsController implements Initializable {
     @FXML private Button btnApply;
     @FXML private Button btnOK;
 
+    private SyncAgent syncAgent;
+    public void setSyncAgent(SyncAgent agent) { this.syncAgent = agent; }
     // --- THÊM DÒNG NÀY ---
     private SettingsService settingsService;
     // -----------------------
@@ -203,11 +208,64 @@ public class SettingsController implements Initializable {
 
     @FXML
     private void handleApply() {
-        if (validateSettings()) {
-            saveSettings();
-            showSuccessMessage("Đã áp dụng cài đặt thành công!");
-        }
+        if (!validateSettings()) return;
+
+        saveSettings();
+
+        // Hỏi nhanh cho chắc (tuỳ bạn, có thể bỏ confirm)
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Làm mới dữ liệu");
+        confirm.setHeaderText("Làm mới toàn bộ dữ liệu cục bộ");
+        confirm.setContentText(
+                "Thao tác sẽ:\n" +
+                        "• Reset cache DB cục bộ\n" +
+                        "• Tải lại toàn bộ dữ liệu mới nhất từ server (mirror)\n\n" +
+                        "Bạn có muốn tiếp tục?");
+        confirm.showAndWait().ifPresent(btn -> {
+            if (btn == ButtonType.OK) {
+                doFullRefreshNow();
+            }
+        });
     }
+    // Chạy refresh ở background + hiển thị progress modal
+    private void doFullRefreshNow() {
+        if (syncAgent == null) {
+            showErrorMessage("Chưa gắn SyncAgent cho SettingsController. Hãy gọi setSyncAgent() khi mở màn hình cài đặt.");
+            return;
+        }
+
+        // Dialog progress đơn giản
+        ProgressIndicator pi = new ProgressIndicator();
+        Dialog<Void> dlg = new Dialog<>();
+        dlg.setTitle("Đang làm mới dữ liệu…");
+        dlg.setHeaderText("Đang reset DB cục bộ và tải mới từ server");
+        dlg.getDialogPane().setContent(pi);
+        dlg.getDialogPane().getButtonTypes().clear();
+        dlg.initOwner(btnApply.getScene().getWindow());
+        dlg.initModality(Modality.APPLICATION_MODAL);
+        dlg.show();
+
+        // Chạy background
+        Thread t = new Thread(() -> {
+            try {
+                syncAgent.forceFullRefreshFromSettings();
+                // xong -> đóng dialog + báo thành công
+                Platform.runLater(() -> {
+                    dlg.close();
+                    showSuccessMessage("Đã làm mới dữ liệu thành công!");
+                });
+            } catch (Exception ex) {
+                Platform.runLater(() -> {
+                    dlg.close();
+                    showErrorMessage("Làm mới thất bại: " + ex.getMessage());
+                });
+            }
+        }, "Force-Full-Refresh");
+        t.setDaemon(true);
+        t.start();
+    }
+
+
 
     @FXML
     private void handleOK() {

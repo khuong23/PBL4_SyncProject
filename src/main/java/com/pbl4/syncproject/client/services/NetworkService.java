@@ -1,358 +1,396 @@
 package com.pbl4.syncproject.client.services;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.common.jsonhandler.JsonUtils;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
-
-// --- THÊM CÁC IMPORT MỚI ---
 import javafx.application.Platform;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.SimpleBooleanProperty;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-// -----------------------------
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Base64;
+import java.util.concurrent.*;
+import java.util.function.LongSupplier;
 
 /**
- * Service class để xử lý network communication với server
- * Tách biệt network logic khỏi UI controller
- * Sử dụng ClientConnectionManager để duy trì kết nối duy nhất
+ * NetworkService
+ * - Giao tiếp JSON với server
+ * - Hỗ trợ since_seq: getChangesSince(), getFeedHead()/pingGetLastSeq()
+ * - Heartbeat online/offline + heartbeat phát hiện thay đổi mới (lastSeq > since_seq)
+ * - API thao tác file/folder cơ bản: upload, download, create, delete, move, rename
+ *
+ * Lưu ý:
+ *  - Không shutdown executor khi stopHeartbeat(); chỉ hủy các Future → có thể start lại.
+ *  - Tất cả request đều tự chèn username nếu có.
  */
 public class NetworkService {
-    private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB limit
+
+    private static final long MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
     private String serverIP;
     private int serverPort;
-    private String currentUsername; // Username để gửi kèm trong mọi request
+    private String currentUsername; // đính kèm mọi request
 
-    // --- THÊM CÁC BIẾN MỚI CHO HEARTBEAT ---
-    // Service để chạy "nhịp tim"
-    private final ScheduledExecutorService heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "Heartbeat-Thread");
-        t.setDaemon(true); // Tự động tắt khi app tắt
-        return t;
-    });
+    // ---- Heartbeat ----
+    private final ScheduledExecutorService heartbeatScheduler =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "Heartbeat-Thread");
+                t.setDaemon(true);
+                return t;
+            });
 
-    // Thuộc tính JavaFX để UI (MainController) lắng nghe
+    private ScheduledFuture<?> statusHeartbeat; // ping online/offline
+    private ScheduledFuture<?> seqHeartbeat;    // ping lastSeq để kích down-sync
+
     private final BooleanProperty isOnlineProperty = new SimpleBooleanProperty(false);
-    
-    private boolean lastPingStatus = false;
-    // -----------------------------------------
+    private volatile boolean lastPingStatus = false;
 
-    /**
-     * Constructor - PHẢI set server address sau khi tạo object
-     */
-    public NetworkService() {
-        // Không set default IP/port - phải được set từ login
-        this.serverIP = null;
-        this.serverPort = 0;
-        this.currentUsername = null;
-    }
-
-    /**
-     * Constructor với custom server IP và port (recommended)
-     */
+    public NetworkService() { /* setServerAddress() sau */ }
     public NetworkService(String serverIP, int serverPort) {
         this.serverIP = serverIP;
         this.serverPort = serverPort;
-        this.currentUsername = null;
     }
 
-    /**
-     * Set server IP và port (BẮT BUỘC gọi trước khi sử dụng các method khác)
-     */
+    // ---- Config / State ----
     public void setServerAddress(String serverIP, int serverPort) {
         this.serverIP = serverIP;
         this.serverPort = serverPort;
         System.out.println("📍 NetworkService configured: " + serverIP + ":" + serverPort);
     }
+    public String getServerIP() { return serverIP; }
+    public int getServerPort() { return serverPort; }
 
-    /**
-     * Set current username (gọi sau khi login thành công)
-     */
     public void setCurrentUsername(String username) {
         this.currentUsername = username;
         System.out.println("👤 NetworkService username set: " + username);
     }
+    public String getCurrentUsername() { return this.currentUsername; }
 
-    /**
-     * Get current username
-     */
-    public String getCurrentUsername() {
-        return this.currentUsername;
+    /** Trạng thái ONLINE dựa trên heartbeat/ping (nên dùng cho UI). */
+    public boolean isOnline() { return isOnlineProperty.get(); }
+    /** Truy cập property để bind UI. */
+    public BooleanProperty isOnlineProperty() { return isOnlineProperty; }
+    /** Trạng thái socket raw (có thể true nhưng server không phản hồi ping). */
+    public boolean isConnected() { return ClientConnectionManager.getInstance().isConnected(); }
+
+    // ---------------- HEARTBEAT ----------------
+
+    /** Heartbeat chỉ để cập nhật ONLINE/OFFLINE (30s/lần). An toàn, idempotent. */
+    public synchronized void startHeartbeat() {
+        if (statusHeartbeat != null && !statusHeartbeat.isCancelled() && !statusHeartbeat.isDone()) return;
+        statusHeartbeat = heartbeatScheduler.scheduleAtFixedRate(this::performPing, 0, 30, TimeUnit.SECONDS);
     }
 
-    /**
-     * Helper method: Thêm username vào JsonObject data nếu có
-     */
-    private void addUsernameToData(JsonObject data) {
-        if (currentUsername != null && !currentUsername.isBlank()) {
-            data.addProperty("username", currentUsername);
-        }
+    /** Heartbeat phát hiện thay đổi server theo seq (3s/lần) và gọi onRemoteChange khi cần. */
+    public synchronized void startHeartbeat(Runnable onRemoteChange, LongSupplier getSinceSeq) {
+        // Đảm bảo heartbeat ONLINE cũng chạy
+        startHeartbeat();
+        if (seqHeartbeat != null && !seqHeartbeat.isCancelled() && !seqHeartbeat.isDone()) return;
+
+        seqHeartbeat = heartbeatScheduler.scheduleAtFixedRate(() -> {
+            try {
+                Response res = sendRequest(new Request("PING", new JsonObject()));
+                if (!"success".equals(res.getStatus())) {
+                    markOffline();
+                    return;
+                }
+                JsonObject data = asObj(res.getData());
+                long lastSeq = (data != null && data.has("lastSeq")) ? safeGetLong(data.get("lastSeq")) : 0L;
+                long currentSince = getSinceSeq.getAsLong();
+                if (lastSeq > currentSince) onRemoteChange.run();
+
+                // cập nhật ONLINE nếu vừa trở lại
+                markOnline();
+            } catch (Exception e) {
+                markOffline();
+            }
+        }, 0, 3, TimeUnit.SECONDS);
     }
 
-    // --- THÊM CÁC PHƯƠNG THỨC MỚI CHO HEARTBEAT ---
-    
-    /**
-     * Trả về thuộc tính (Property) để UI có thể lắng nghe.
-     */
-    public BooleanProperty isOnlineProperty() {
-        return isOnlineProperty;
+    /** Hủy các heartbeat đang chạy (có thể start lại). */
+    public synchronized void stopHeartbeat() {
+        if (statusHeartbeat != null) { statusHeartbeat.cancel(false); statusHeartbeat = null; }
+        if (seqHeartbeat != null)    { seqHeartbeat.cancel(false);    seqHeartbeat = null; }
     }
 
-    /**
-     * Kiểm tra trạng thái online (lấy từ Manager).
-     */
-    public boolean isOnline() {
-        return ClientConnectionManager.getInstance().isConnected();
-    }
-
-    /**
-     * Bắt đầu tiến trình "nhịp tim" (ping) định kỳ.
-     * Sẽ được gọi bởi MainController sau khi đăng nhập.
-     */
-    public void startHeartbeat() {
-        heartbeatScheduler.scheduleAtFixedRate(this::performPing, 
-            0, // Bắt đầu ngay lập tức
-            30, // Chạy mỗi 30 giây
-            TimeUnit.SECONDS);
-    }
-
-    /**
-     * Dừng tiến trình "nhịp tim".
-     */
-    public void stopHeartbeat() {
-        heartbeatScheduler.shutdownNow();
-    }
-
-    /**
-     * Thực hiện một lần PING để kiểm tra kết nối.
-     */
     private void performPing() {
-        boolean tempStatus;
         try {
-            // Gửi một request PING nhẹ (đã có trong Dispatcher server)
-            Request pingRequest = new Request("PING", null);
-            Response response = sendRequest(pingRequest); // sendRequest đã xử lý offline
-            
-            tempStatus = "success".equals(response.getStatus());
-
+            Response response = sendRequest(new Request("PING", new JsonObject()));
+            if ("success".equals(response.getStatus())) {
+                markOnline();
+            } else {
+                markOffline();
+            }
         } catch (Exception e) {
             System.out.println("[Heartbeat] Ping thất bại: " + e.getMessage());
-            tempStatus = false;
-        }
-        
-        final boolean currentStatus = tempStatus; // Biến final để dùng trong lambda
-        
-        // Chỉ cập nhật và thông báo nếu trạng thái THAY ĐỔI
-        if (currentStatus != lastPingStatus) {
-            System.out.println("[Heartbeat] Trạng thái thay đổi: " + (currentStatus ? "ONLINE" : "OFFLINE"));
-            lastPingStatus = currentStatus;
-            
-            // Cập nhật isOnlineProperty trên UI Thread
-            Platform.runLater(() -> isOnlineProperty.set(currentStatus));
+            markOffline();
         }
     }
-    
-    // ---------------------------------------------------
 
-    /**
-     * Kiểm tra xem server address đã được set chưa
-     */
+    private void markOnline() {
+        if (!lastPingStatus) {
+            lastPingStatus = true;
+            Platform.runLater(() -> isOnlineProperty.set(true));
+            System.out.println("[Heartbeat] ONLINE");
+        }
+    }
+
+    private void markOffline() {
+        if (lastPingStatus) {
+            lastPingStatus = false;
+            Platform.runLater(() -> isOnlineProperty.set(false));
+            System.out.println("[Heartbeat] OFFLINE");
+        }
+    }
+
+    // ------------------------- Helpers chung -------------------------
+
     private void validateServerAddress() throws Exception {
         if (serverIP == null || serverIP.trim().isEmpty() || serverPort <= 0) {
             throw new Exception("Server address chưa được thiết lập! Vui lòng gọi setServerAddress() trước.");
         }
     }
 
-    /**
-     * Get current server IP
-     */
-    public String getServerIP() {
-        return this.serverIP;
+    private void addUsernameToData(JsonObject data) {
+        if (currentUsername != null && !currentUsername.isBlank()) {
+            data.addProperty("username", currentUsername);
+        }
     }
 
-    /**
-     * Get current server port
-     */
-    public int getServerPort() {
-        return this.serverPort;
+    private long safeGetLong(JsonElement el) {
+        try {
+            if (el == null || el.isJsonNull()) return 0L;
+            if (el.isJsonPrimitive() && el.getAsJsonPrimitive().isNumber()) return el.getAsLong();
+            return Long.parseLong(el.getAsString());
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
-    /**
-     * Upload file lên server (với lastKnownHash để phát hiện xung đột)
-     * BƯỚC 7.3: Thêm tham số lastKnownHash
-     */
+    private JsonObject asObj(JsonElement el) {
+        return (el != null && el.isJsonObject()) ? el.getAsJsonObject() : null;
+    }
+
+    private String formatFileSize(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        String pre = "KMGTPE".charAt(exp - 1) + "";
+        return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
+    }
+
+    // --------------------------- API UPLOAD ---------------------------
+
+    /** Upload với lastKnownHash (cũ) — giữ để tương thích; mặc định baseVersion=0 (file mới). */
     public Response uploadFile(File file, int folderId, String lastKnownHash) throws Exception {
-        validateServerAddress(); // Kiểm tra server address trước khi sử dụng
+        return uploadFile(file, folderId, lastKnownHash, 0);
+    }
 
-        // Validate file size
+    /** Upload file mới không hash — tương thích cũ. */
+    public Response uploadFile(File file, int folderId) throws Exception {
+        return uploadFile(file, folderId, null, 0);
+    }
+
+    /** Upload lên root — tương thích cũ. */
+    public Response uploadFile(File file) throws Exception {
+        return uploadFile(file, 1, null, 0);
+    }
+
+    /** Upload theo OCC: gửi kèm baseVersion. */
+    public Response uploadFile(File file, int folderId, String lastKnownHash, int baseVersion) throws Exception {
+        validateServerAddress();
+
+        if (!file.exists()) throw new Exception("File không tồn tại: " + file.getAbsolutePath());
+        if (!file.canRead()) throw new Exception("Không thể đọc file: " + file.getAbsolutePath());
         if (file.length() > MAX_FILE_SIZE) {
-            throw new Exception("File quá lớn. Kích thước tối đa: " + formatFileSize(MAX_FILE_SIZE));
-        }
-
-        // Validate file exists and is readable
-        if (!file.exists()) {
-            throw new Exception("File không tồn tại: " + file.getAbsolutePath());
-        }
-
-        if (!file.canRead()) {
-            throw new Exception("Không thể đọc file: " + file.getAbsolutePath());
+            throw new Exception("File quá lớn. Tối đa: " + formatFileSize(MAX_FILE_SIZE));
         }
 
         try {
-            // Đọc file và encode base64
             byte[] fileBytes = Files.readAllBytes(file.toPath());
             String base64Content = Base64.getEncoder().encodeToString(fileBytes);
+            if (base64Content.isEmpty()) throw new Exception("Nội dung file rỗng hoặc không thể đọc được");
 
-            // Validate base64 content
-            if (base64Content.isEmpty()) {
-                throw new Exception("Nội dung file rỗng hoặc không thể đọc được");
-            }
-
-            // Tạo request JSON
             JsonObject data = new JsonObject();
-            data.addProperty("fileName", file.getName());
-            data.addProperty("fileContent", base64Content);
-            data.addProperty("folderId", folderId);
-            data.addProperty("fileSize", file.length());
+            data.addProperty("fileName",     file.getName());
+            data.addProperty("fileContent",  base64Content);
+            data.addProperty("folderId",     folderId);
+            data.addProperty("fileSize",     file.length());
             data.addProperty("lastModified", file.lastModified());
-            
-            // --- BƯỚC 7.3: THÊM lastKnownHash ---
-            if (lastKnownHash != null) {
-                data.addProperty("lastKnownHash", lastKnownHash);
-            }
-            // -------------------------------------
-            
-            addUsernameToData(data); // Thêm username vào request
 
-            Request request = new Request("UPLOAD_FILE", data);
+            if (lastKnownHash != null) data.addProperty("lastKnownHash", lastKnownHash);
+            data.addProperty("baseVersion", baseVersion);
 
-            // Gửi request và nhận response
-            return sendRequest(request);
-
+            addUsernameToData(data);
+            return sendRequest(new Request("UPLOAD_FILE", data));
         } catch (OutOfMemoryError e) {
             throw new Exception("File quá lớn để xử lý trong bộ nhớ. Hãy thử file nhỏ hơn.");
         } catch (IOException e) {
-            throw new Exception("Lỗi đọc file: " + e.getMessage());
-        } catch (Exception e) {
-            throw e;
+            throw new Exception("Lỗi đọc file: " + e.getMessage(), e);
         }
     }
-    
-    /**
-     * Upload file lên server (không có lastKnownHash - dùng cho file mới)
-     */
-    public Response uploadFile(File file, int folderId) throws Exception {
-        return uploadFile(file, folderId, null);
-    }
 
-    /**
-     * Upload file lên server với default folder (root)
-     */
-    public Response uploadFile(File file) throws Exception {
-        return uploadFile(file, 1); // 1 = root folder (not 0)
-    }
+    // --------------------------- API LIST/TREE ---------------------------
 
-    /**
-     * Lấy danh sách files và folders từ server
-     */
     public Response getFileList(int folderId) throws Exception {
         validateServerAddress();
-
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
-        addUsernameToData(data); // Thêm username vào request
-
-        Request request = new Request("GET_FILE_LIST", data);
-        return sendRequest(request);
+        addUsernameToData(data);
+        return sendRequest(new Request("GET_FILE_LIST", data));
     }
 
-    /**
-     * Lấy danh sách files từ root folder
-     */
-    public Response getFileList() throws Exception {
-        return getFileList(1); // 1 = root folder (not 0)
-    }
+    public Response getFileList() throws Exception { return getFileList(1); }
 
-    /**
-     * Tạo folder trên server
-     */
     public Response createFolder(String folderName, int parentFolderId) throws Exception {
         validateServerAddress();
-
         JsonObject data = new JsonObject();
         data.addProperty("folderName", folderName);
         data.addProperty("parentFolderId", parentFolderId);
-        addUsernameToData(data); // Thêm username vào request
-
-        Request request = new Request("CREATE_FOLDER", data);
-        return sendRequest(request);
+        addUsernameToData(data);
+        return sendRequest(new Request("CREATE_FOLDER", data));
     }
 
-    /**
-     * Tạo folder với parent mặc định (root)
-     */
-    public Response createFolder(String folderName) throws Exception {
-        return createFolder(folderName, 1); // 1 = root folder (not 0)
-    }
+    public Response createFolder(String folderName) throws Exception { return createFolder(folderName, 1); }
 
-    /**
-     * Lấy folder tree từ server (children of specific parent)
-     * @param parentId ID của thư mục cha (0 = lấy thư mục gốc, 1 = lấy children của root)
-     */
     public Response getFolderTree(int parentId) throws Exception {
         validateServerAddress();
         JsonObject data = new JsonObject();
-        // Luôn gửi parentId để server biết chính xác cần lấy gì
-        // parentId = 0: lấy root folders (ParentFolderID IS NULL)
-        // parentId = 1: lấy children của root folder
         data.addProperty("parentId", parentId);
-        addUsernameToData(data); // Thêm username vào request
-        Request request = new Request("FOLDER_TREE", data);
-        return sendRequest(request);
-    }
-    
-    /**
-     * Lấy folder tree từ server (children of root folder) - để tương thích ngược
-     * ParentId = 1 để lấy các folder con của root (shared, documents, images, videos)
-     */
-    public Response getFolderTree() throws Exception {
-        return getFolderTree(0); // Yêu cầu các thư mục gốc theo mặc định
+        addUsernameToData(data);
+        return sendRequest(new Request("FOLDER_TREE", data));
     }
 
-    /**
-     * Download file từ server
-     */
+    public Response getFolderTree() throws Exception { return getFolderTree(0); }
+
+    // --------------------------- API DOWNLOAD ---------------------------
+
+    /** Cũ: trả Response; nên dùng downloadFileTo() để ghi file luôn. */
     public Response downloadFile(int fileId, String fileName, int folderId) throws Exception {
         validateServerAddress();
-
         JsonObject data = new JsonObject();
-        data.addProperty("fileId", String.valueOf(fileId)); // Gửi fileId dưới dạng String
-        data.addProperty("fileName", fileName);
-        data.addProperty("folderId", String.valueOf(folderId)); // Gửi dưới dạng String
-        addUsernameToData(data); // Thêm username vào request
-
-        Request request = new Request("DOWNLOAD_FILE", data);
-        return sendRequest(request);
+        data.addProperty("fileId", fileId);
+        addUsernameToData(data);
+        return sendRequest(new Request("DOWNLOAD_FILE", data));
     }
 
-    /**
-     * Test connection to server - sử dụng persistent connection
-     */
+    /** Mới: tải file và ghi về đĩa (tạo thư mục nếu cần). */
+    public boolean downloadFileTo(int fileId, String fileName, int folderId, Path saveTo) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId);
+        addUsernameToData(data);
+
+        Response res = sendRequest(new Request("DOWNLOAD_FILE", data));
+        if (!"success".equals(res.getStatus())) return false;
+
+        JsonObject d = asObj(res.getData());
+        if (d == null || !d.has("fileContent")) return false;
+
+        byte[] bytes = Base64.getDecoder().decode(d.get("fileContent").getAsString());
+        Files.createDirectories(saveTo.getParent());
+        Files.write(saveTo, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        return true;
+    }
+
+    // --------------------------- API CHANGE FEED ---------------------------
+
+    /** Lấy thay đổi kể từ sinceSeq (Version/Seq). */
+    public Response getChangesSince(long sinceSeq) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("sinceSeq", sinceSeq);
+        addUsernameToData(data);
+        return sendRequest(new Request("GET_CHANGES_SINCE", data));
+    }
+
+    /** Wrapper chính thức cho GET_FEED_HEAD (nếu server hỗ trợ). */
+    public long getFeedHead() throws Exception {
+        Response res = sendRequest(new Request("GET_FEED_HEAD", new JsonObject()));
+        if (!"success".equals(res.getStatus())) return -1L;
+        JsonObject d = asObj(res.getData());
+        if (d == null) return -1L;
+        if (d.has("head"))    return safeGetLong(d.get("head"));
+        if (d.has("lastSeq")) return safeGetLong(d.get("lastSeq"));
+        return -1L;
+    }
+
+    /** Lấy lastSeq hiện tại bằng PING (fallback khi không có GET_FEED_HEAD). */
+    public long pingGetLastSeq() throws Exception {
+        Response res = sendRequest(new Request("PING", new JsonObject()));
+        if (!"success".equals(res.getStatus())) return 0L;
+        JsonObject d = asObj(res.getData());
+        return (d != null && d.has("lastSeq")) ? safeGetLong(d.get("lastSeq")) : 0L;
+    }
+
+    // --------------------------- API FILE/FOLDER OPS (bổ sung) ---------------------------
+
+    public Response deleteFile(int fileId) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId);
+        addUsernameToData(data);
+        return sendRequest(new Request("DELETE_FILE", data));
+    }
+
+    public Response deleteFolder(int folderId, boolean recursive) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("folderId", folderId);
+        data.addProperty("recursive", recursive);
+        addUsernameToData(data);
+        return sendRequest(new Request("DELETE_FOLDER", data));
+    }
+
+    public Response renameFile(int fileId, String newName) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId);
+        data.addProperty("newName", newName);
+        addUsernameToData(data);
+        return sendRequest(new Request("RENAME_FILE", data));
+    }
+
+    public Response renameFolder(int folderId, String newName) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("folderId", folderId);
+        data.addProperty("newName", newName);
+        addUsernameToData(data);
+        return sendRequest(new Request("RENAME_FOLDER", data));
+    }
+
+    public Response moveFile(int fileId, int targetFolderId) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("fileId", fileId);
+        data.addProperty("targetFolderId", targetFolderId);
+        addUsernameToData(data);
+        return sendRequest(new Request("MOVE_FILE", data));
+    }
+
+    public Response moveFolder(int folderId, int targetParentId) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("folderId", folderId);
+        data.addProperty("targetParentId", targetParentId);
+        addUsernameToData(data);
+        return sendRequest(new Request("MOVE_FOLDER", data));
+    }
+
+    // ---------------------- Kết nối & gửi nhận chung ----------------------
+
     public boolean testConnection() {
         try {
-            // Kiểm tra xem connection manager có kết nối không
-            ClientConnectionManager connectionManager = ClientConnectionManager.getInstance();
-            if (!connectionManager.isConnected()) {
-                // Thử kết nối nếu chưa có
+            ClientConnectionManager m = ClientConnectionManager.getInstance();
+            if (!m.isConnected()) {
                 if (serverIP != null && serverPort > 0) {
-                    connectionManager.connect(serverIP, serverPort);
+                    m.connect(serverIP, serverPort);
                     return true;
                 }
                 return false;
@@ -364,113 +402,39 @@ public class NetworkService {
         }
     }
 
-    /**
-     * Gửi request lên server và nhận response (sử dụng persistent connection)
-     */
     public Response sendRequest(Request request) throws Exception {
-        // Lấy instance của connection manager
-        ClientConnectionManager connectionManager = ClientConnectionManager.getInstance();
-
-        if (!connectionManager.isConnected()) {
-            // Cố gắng kết nối lại nếu bị mất kết nối
+        ClientConnectionManager m = ClientConnectionManager.getInstance();
+        if (!m.isConnected()) {
             if (serverIP != null && serverPort > 0) {
-                connectionManager.connect(serverIP, serverPort);
+                m.connect(serverIP, serverPort);
             } else {
                 throw new Exception("Mất kết nối tới server và không có thông tin để kết nối lại. Vui lòng đăng nhập lại.");
             }
         }
-        
+
         try {
             String requestJson = JsonUtils.toJson(request);
             if (requestJson == null || requestJson.trim().isEmpty()) {
                 throw new Exception("Lỗi tạo request JSON");
             }
-            
-            System.out.println("DEBUG: Sending request (persistent): " + requestJson.substring(0, Math.min(100, requestJson.length())));
-            
-            // Sử dụng manager để gửi và nhận
-            String responseStr = connectionManager.sendRequestAndGetResponse(requestJson);
+            System.out.println("DEBUG: Sending request: " + requestJson.substring(0, Math.min(120, requestJson.length())));
+            String responseStr = m.sendRequestAndGetResponse(requestJson);
+            if (responseStr == null) throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
 
-            if (responseStr == null) {
-                throw new Exception("Server không phản hồi hoặc đã ngắt kết nối");
-            }
-
-            System.out.println("DEBUG: Received response (persistent): " + responseStr.substring(0, Math.min(100, responseStr.length())));
-
-            // Parse response
+            System.out.println("DEBUG: Received response: " + responseStr.substring(0, Math.min(120, responseStr.length())));
             Response response = JsonUtils.fromJson(responseStr, Response.class);
-            if (response == null) {
-                throw new Exception("Không thể phân tích phản hồi từ server");
-            }
-
+            if (response == null) throw new Exception("Không thể phân tích phản hồi từ server");
             return response;
 
         } catch (IOException e) {
-            // Khi có lỗi IO, đóng kết nối và đánh dấu offline
-            connectionManager.close(); // Thằng này đã set isOnline = false
-
-            // --- THÊM LOGIC CẬP NHẬT TRẠNG THÁI ---
-            // Thông báo cho UI biết là đã offline
-            if (lastPingStatus) { // Chỉ thông báo nếu trước đó đang online
-                lastPingStatus = false;
-                Platform.runLater(() -> isOnlineProperty.set(false));
-            }
-            // ---------------------------------------
-
+            m.close();
+            markOffline();
             throw new Exception("Lỗi kết nối mạng: " + e.getMessage(), e);
         } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().startsWith("Không thể")) {
-                throw e; // Re-throw our custom messages
-            }
-            throw new Exception("Lỗi không xác định: " + e.getMessage(), e);
+            // Nếu thông báo đã đầy đủ, ném lại; nếu không, bọc message chung
+            String msg = e.getMessage();
+            if (msg != null && (msg.startsWith("Không thể") || msg.startsWith("Mất kết nối"))) throw e;
+            throw new Exception("Lỗi không xác định: " + msg, e);
         }
     }
-
-    /**
-     * Get current server info from connection manager
-     */
-    public String getServerInfo() {
-        ClientConnectionManager connectionManager = ClientConnectionManager.getInstance();
-        String connectionInfo = connectionManager.getServerInfo();
-        if (!"Not connected".equals(connectionInfo)) {
-            return connectionInfo;
-        }
-        return serverIP + ":" + serverPort; // Fallback to local info
-    }
-
-    /**
-     * Format file size in human readable format
-     */
-    private String formatFileSize(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        int exp = (int) (Math.log(bytes) / Math.log(1024));
-        String pre = "KMGTPE".charAt(exp - 1) + "";
-        return String.format("%.1f %sB", bytes / Math.pow(1024, exp), pre);
-    }
-    
-    // --- THÊM CÁC HÀM MỚI CHO BƯỚC 6.5 ---
-    
-    /**
-     * Lấy danh sách thay đổi từ server kể từ một mốc thời gian.
-     */
-    public Response getChangesSince(java.sql.Timestamp lastSyncTime) throws Exception {
-        JsonObject data = new JsonObject();
-        data.addProperty("lastSyncTime", lastSyncTime.getTime());
-        
-        Request request = new Request("GET_CHANGES_SINCE", data);
-        return sendRequest(request);
-    }
-    
-    /**
-     * Tải file từ server về local (tạm thời).
-     * TODO: Xây dựng logic gọi DownloadFileHandler đầy đủ
-     */
-    public boolean downloadFile(int fileId, java.nio.file.Path localSavePath) {
-        // TODO: Xây dựng logic gọi DownloadFileHandler
-        // Logic này sẽ phức tạp vì nó truyền file, không chỉ là JSON
-        // Tạm thời giả định nó thành công
-        System.out.println("⚠️ Đang giả lập tải file ID: " + fileId + " về " + localSavePath);
-        return true;
-    }
-    // -------------------------
 }

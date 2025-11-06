@@ -6,6 +6,7 @@ import com.pbl4.syncproject.server.handlers.*;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 public class Dispatcher {
     private final Map<String, RequestHandler> handlers = new HashMap<>();
@@ -25,15 +26,8 @@ public class Dispatcher {
         handlers.put("GET_FOLDER_PERMISSIONS", new GetFolderPermissionsHandler());
         handlers.put("GET_USER_LIST", new GetUserListHandler());
         handlers.put("GET_CHANGES_SINCE", new GetChangesSinceHandler());
-        // -----------------------------
-
-        // PING: kiểm tra kết nối đơn giản
-        handlers.put("PING", req -> {
-            Response res = new Response();
-            res.setStatus("success");
-            res.setMessage("Server is online and responding");
-            return res;
-        });
+        //Ping và trả về lastSeq
+        handlers.put("PING", new PingHandler());
     }
 
     public Response dispatch(Request req) {

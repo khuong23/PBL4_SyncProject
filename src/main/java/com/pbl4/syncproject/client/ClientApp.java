@@ -10,7 +10,7 @@ public class ClientApp extends Application {
     @Override
     public void start(Stage stage) throws Exception {
 
-        LocalDatabaseManager.getInstance().initializeDatabase();
+        LocalDatabaseManager.getInstance().initializeDatabase(false);
         FXMLLoader loader = new FXMLLoader(ClientApp.class.getResource("/com/pbl4/syncproject/login.fxml"));
         Scene scene = new Scene(loader.load(), 900, 580);
         stage.setTitle("Đăng nhập - Hệ thống đồng bộ dữ liệu");

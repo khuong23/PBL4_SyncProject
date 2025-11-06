@@ -3,220 +3,374 @@ package com.pbl4.syncproject.client.services;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Map;
+import java.util.List;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static java.nio.file.StandardWatchEventKinds.*;
 
 /**
- * Service để monitor file system changes sử dụng Java WatchService
- * Detect real-time file create, modify, delete events
+ * FileWatcherService:
+ * - Theo dõi đệ quy thư mục với WatchService
+ * - Hỗ trợ pause/resume/runMuted để tránh vòng lặp khi ghi file từ server
+ * - Bộ lọc ignore mạnh: glob + prefix + suffix + ẩn file/dir
+ * - Overflow tolerant: phát onOverflow + soft-rescan nhẹ để bù sự kiện rơi
  */
 public class FileWatcherService {
-    
+
     private WatchService watchService;
     private final Map<WatchKey, Path> keyToPathMap = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private volatile boolean isRunning = false;
-    
-    // Callback interfaces cho different events
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "FileWatcher-Thread");
+        t.setDaemon(true);
+        return t;
+    });
+    private final Set<FileChangeListener> listeners = ConcurrentHashMap.newKeySet();
+
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private final AtomicBoolean paused = new AtomicBoolean(false);
+
+    // Ignore matchers
+    private final Set<PathMatcher> ignoreMatchers = ConcurrentHashMap.newKeySet();
+    private final Set<String> ignorePrefixes = ConcurrentHashMap.newKeySet();
+    private final Set<String> ignoreSuffixes = ConcurrentHashMap.newKeySet();
+    private volatile boolean ignoreHidden = true;
+    private volatile boolean softRescanOnOverflow = true;
+
+    private Thread shutdownHook;
+
+    /** Listener callback */
     public interface FileChangeListener {
         void onFileCreated(Path filePath);
         void onFileModified(Path filePath);
         void onFileDeleted(Path filePath);
+
+        /** Mặc định: bỏ qua; caller có thể override để rescan nhẹ */
+        default void onOverflow(Path watchedDirectory) {}
     }
-    
-    private final Set<FileChangeListener> listeners = ConcurrentHashMap.newKeySet();
-    
-    /**
-     * Start watching service
-     */
+
+    // ---------------- Public API ----------------
+
+    /** Bắt đầu watcher */
     public void start() throws IOException {
-        if (isRunning) {
-            return;
-        }
-        
+        if (isRunning.get()) return;
         watchService = FileSystems.getDefault().newWatchService();
-        isRunning = true;
-        
-        // Start monitoring thread
+        isRunning.set(true);
+
+        // Mặc định ignore một số pattern phổ biến + file tạm khi tải/ghi
+        addDefaultIgnores();
+
+        // Đảm bảo đóng watcher khi JVM thoát
+        installShutdownHook();
+
         executor.submit(this::watchLoop);
         System.out.println("FileWatcher service started");
     }
-    
-    /**
-     * Stop watching service
-     */
+
+    /** Dừng watcher */
     public void stop() {
-        isRunning = false;
-        
+        if (!isRunning.getAndSet(false)) return;
+
         try {
-            if (watchService != null) {
-                watchService.close();
-            }
+            if (watchService != null) watchService.close();
         } catch (IOException e) {
             System.err.println("Error closing watch service: " + e.getMessage());
         }
-        
-        executor.shutdown();
+        executor.shutdownNow();
+        keyToPathMap.clear();
+        removeShutdownHook();
         System.out.println("FileWatcher service stopped");
     }
-    
-    /**
-     * Add directory để watch
-     */
+
+    /** Tạm dừng phát sự kiện (dùng trong mirror/down-sync hoặc rename/ghi file chủ động) */
+    public void pause() {
+        paused.set(true);
+    }
+
+    /** Tiếp tục phát sự kiện */
+    public void resume() {
+        paused.set(false);
+    }
+
+    /** Chạy 1 khối code trong trạng thái muted (tự pause/resume) */
+    public void runMuted(Runnable r) {
+        boolean prev = paused.getAndSet(true);
+        try { r.run(); } finally { paused.set(prev); }
+    }
+
+    public boolean isRunning() { return isRunning.get(); }
+    public boolean isPaused()  { return paused.get(); }
+
+    /** Bắt đầu watch một thư mục (đệ quy) */
     public void watchDirectory(Path directory) throws IOException {
         if (!Files.exists(directory) || !Files.isDirectory(directory)) {
             throw new IllegalArgumentException("Directory does not exist: " + directory);
         }
-        
-        // Register directory và subdirectories
         registerRecursive(directory);
         System.out.println("Started watching directory: " + directory);
     }
-    
-    /**
-     * Register directory và tất cả subdirectories
-     */
-    private void registerRecursive(Path directory) throws IOException {
-        Files.walkFileTree(directory, new SimpleFileVisitor<Path>() {
+
+    /** Thêm listener */
+    public void addListener(FileChangeListener listener) {
+        listeners.add(listener);
+    }
+
+    /** Gỡ listener */
+    public void removeListener(FileChangeListener listener) {
+        listeners.remove(listener);
+    }
+
+    /** Số lượng directories đang watch */
+    public int getWatchedDirectoryCount() {
+        return keyToPathMap.size();
+    }
+
+    // ---- Ignore controls ----
+    public void setIgnoreHidden(boolean enabled) { this.ignoreHidden = enabled; }
+    public void setSoftRescanOnOverflow(boolean enabled) { this.softRescanOnOverflow = enabled; }
+
+    public void addIgnoreGlob(String glob) {
+        PathMatcher m = FileSystems.getDefault().getPathMatcher("glob:" + glob);
+        ignoreMatchers.add(m);
+    }
+    public void addIgnoreMatcher(PathMatcher matcher) {
+        ignoreMatchers.add(matcher);
+    }
+    public void addIgnorePrefixes(String... prefixes) {
+        if (prefixes == null) return;
+        for (String p : prefixes) if (p != null && !p.isEmpty()) ignorePrefixes.add(p);
+    }
+    public void addIgnoreSuffixes(String... suffixes) {
+        if (suffixes == null) return;
+        for (String s : suffixes) if (s != null && !s.isEmpty()) ignoreSuffixes.add(s);
+    }
+
+    // --------------- Internal ----------------
+
+    private void addDefaultIgnores() {
+        // File tạm & dotfiles thường gặp
+        addIgnoreGlob("**/*.tmp");
+        addIgnoreGlob("**/*.swp");
+        addIgnoreGlob("**/*~");
+        addIgnoreGlob("**/.DS_Store");
+        addIgnoreGlob("**/Thumbs.db");
+
+        // SCM & IDE
+        addIgnoreGlob("**/.git/**");
+        addIgnoreGlob("**/.idea/**");
+
+        // Build dirs phổ biến
+        addIgnoreGlob("**/target/**");
+        addIgnoreGlob("**/build/**");
+        addIgnoreGlob("**/out/**");
+
+        // Tải xuống/ghi tạm ở nhiều app/browser/editor
+        addIgnoreSuffixes(".part", ".partial", ".crdownload", ".download", ".tmp");
+        addIgnorePrefixes("~$"); // MS Office temp
+    }
+
+    private void registerRecursive(Path root) throws IOException {
+        Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                if (shouldIgnoreDirectory(dir)) return FileVisitResult.SKIP_SUBTREE;
                 registerDirectory(dir);
                 return FileVisitResult.CONTINUE;
             }
         });
     }
-    
-    /**
-     * Register single directory
-     */
+
     private void registerDirectory(Path directory) throws IOException {
-        WatchKey key = directory.register(watchService,
-                StandardWatchEventKinds.ENTRY_CREATE,
-                StandardWatchEventKinds.ENTRY_MODIFY,
-                StandardWatchEventKinds.ENTRY_DELETE);
-        
+        WatchKey key = directory.register(watchService, ENTRY_CREATE, ENTRY_MODIFY, ENTRY_DELETE);
         keyToPathMap.put(key, directory);
     }
-    
-    /**
-     * Add listener cho file change events
-     */
-    public void addListener(FileChangeListener listener) {
-        listeners.add(listener);
-    }
-    
-    /**
-     * Remove listener
-     */
-    public void removeListener(FileChangeListener listener) {
-        listeners.remove(listener);
-    }
-    
-    /**
-     * Main watch loop
-     */
+
     private void watchLoop() {
-        while (isRunning) {
+        while (isRunning.get()) {
             try {
-                WatchKey key = watchService.take(); // Blocking call
+                WatchKey key = watchService.take(); // blocking
                 Path directory = keyToPathMap.get(key);
-                
                 if (directory == null) {
+                    // key không còn hợp lệ (thư mục bị xóa / moved)
+                    key.reset();
                     continue;
                 }
-                
-                for (WatchEvent<?> event : key.pollEvents()) {
+
+                List<WatchEvent<?>> events = key.pollEvents();
+                for (WatchEvent<?> event : events) {
                     WatchEvent.Kind<?> kind = event.kind();
-                    
-                    if (kind == StandardWatchEventKinds.OVERFLOW) {
+
+                    if (kind == OVERFLOW) {
+                        // Báo overflow cho caller
+                        notifyOverflow(directory);
+                        // Soft-rescan nhẹ để bù event rơi (tùy chọn)
+                        if (softRescanOnOverflow) {
+                            softRescan(directory);
+                        }
                         continue;
                     }
-                    
+
                     @SuppressWarnings("unchecked")
                     WatchEvent<Path> pathEvent = (WatchEvent<Path>) event;
-                    Path fileName = pathEvent.context();
-                    Path fullPath = directory.resolve(fileName);
-                    
-                    // Handle different event types
-                    handleFileEvent(kind, fullPath);
-                    
-                    // If new directory was created, register it too
-                    if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(fullPath)) {
+                    Path child = pathEvent.context();
+                    Path fullPath = directory.resolve(child);
+
+                    // Nếu tạo thư mục mới → phải đăng ký ngay (để theo dõi sâu)
+                    if (kind == ENTRY_CREATE) {
                         try {
-                            registerRecursive(fullPath);
+                            if (Files.isDirectory(fullPath)) {
+                                if (!shouldIgnoreDirectory(fullPath)) {
+                                    registerRecursive(fullPath);
+                                }
+                            }
                         } catch (IOException e) {
                             System.err.println("Error registering new directory: " + e.getMessage());
                         }
                     }
+
+                    // Phát sự kiện
+                    handleFileEvent(kind, fullPath);
                 }
-                
-                // Reset key
+
                 boolean valid = key.reset();
                 if (!valid) {
                     keyToPathMap.remove(key);
                     if (keyToPathMap.isEmpty()) {
+                        // Không còn gì để theo dõi → kết thúc
                         break;
                     }
                 }
-                
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                break;
+            } catch (ClosedWatchServiceException cwse) {
+                // stop() đã được gọi
                 break;
             } catch (Exception e) {
                 System.err.println("Error in watch loop: " + e.getMessage());
             }
         }
     }
-    
-    /**
-     * Handle file system events
-     */
+
     private void handleFileEvent(WatchEvent.Kind<?> kind, Path filePath) {
-        // Ignore temporary và hidden files
-        String fileName = filePath.getFileName().toString();
-        if (fileName.startsWith(".") || fileName.endsWith(".tmp") || fileName.endsWith(".swp")) {
-            return;
-        }
-        
-        // --- XÓA HOẶC VÔ HIỆU HÓA DÒNG NÀY ---
-        // Dòng này ngăn cản việc theo dõi thư mục:
-        // if (!Files.isRegularFile(filePath) && kind != StandardWatchEventKinds.ENTRY_DELETE) {
-        //     return;
-        // }
-        // ------------------------------------
-        
+        if (!isRunning.get() || paused.get()) return;
+
+        // Bỏ qua một số file/dir theo tên và theo glob
+        if (shouldIgnore(filePath)) return;
+
+        // Log gọn
         System.out.println("File event: " + kind.name() + " - " + filePath);
-        
-        // Notify listeners
-        for (FileChangeListener listener : listeners) {
+
+        // Gửi tới listener
+        for (FileChangeListener l : listeners) {
             try {
-                if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
-                    listener.onFileCreated(filePath);
-                } else if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-                    listener.onFileModified(filePath);
-                } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                    listener.onFileDeleted(filePath);
+                if (kind == ENTRY_CREATE) {
+                    l.onFileCreated(filePath);
+                } else if (kind == ENTRY_MODIFY) {
+                    l.onFileModified(filePath);
+                } else if (kind == ENTRY_DELETE) {
+                    l.onFileDeleted(filePath);
                 }
-            } catch (Exception e) {
-                System.err.println("Error in file change listener: " + e.getMessage());
+            } catch (Exception ex) {
+                System.err.println("Error in file change listener: " + ex.getMessage());
             }
         }
     }
-    
-    /**
-     * Check if service is running
-     */
-    public boolean isRunning() {
-        return isRunning;
+
+    private void notifyOverflow(Path directory) {
+        for (FileChangeListener l : listeners) {
+            try { l.onOverflow(directory); }
+            catch (Exception ex) { System.err.println("Error in overflow listener: " + ex.getMessage()); }
+        }
     }
-    
-    /**
-     * Get số directories đang được watched
-     */
-    public int getWatchedDirectoryCount() {
-        return keyToPathMap.size();
+
+    /** Rescan nhẹ: phát onFileModified cho toàn bộ file hiện có trong thư mục để SyncAgent có cơ hội bù sự kiện. */
+    private void softRescan(Path directory) {
+        if (paused.get()) return;
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(directory)) {
+            for (Path p : ds) {
+                if (Files.isDirectory(p)) continue;
+                if (shouldIgnore(p)) continue;
+                for (FileChangeListener l : listeners) {
+                    try { l.onFileModified(p); } catch (Exception ignored) {}
+                }
+            }
+        } catch (IOException ioe) {
+            // best effort
+        }
+    }
+
+    // ---- Ignore helpers ----
+
+    private boolean shouldIgnoreDirectory(Path dir) {
+        // Ẩn dir?
+        if (ignoreHidden) {
+            try {
+                if (Files.isHidden(dir)) return true;
+            } catch (IOException ignored) {}
+        }
+        // Glob matchers
+        Path abs = dir.toAbsolutePath().normalize();
+        for (PathMatcher m : ignoreMatchers) {
+            if (m.matches(abs)) return true;
+        }
+        // Tên bắt đầu bằng "." cũng bỏ qua (dotdir)
+        String name = dir.getFileName() != null ? dir.getFileName().toString() : "";
+        return name.startsWith(".");
+    }
+
+    private boolean shouldIgnore(Path path) {
+        // Dir check (để giảm noise)
+        if (Files.isDirectory(path)) {
+            return shouldIgnoreDirectory(path);
+        }
+
+        String name = path.getFileName() != null ? path.getFileName().toString() : "";
+
+        // Hidden file?
+        if (ignoreHidden) {
+            try {
+                if (Files.isHidden(path)) return true;
+            } catch (IOException ignored) {}
+        }
+
+        // Quick name-based filters
+        for (String p : ignorePrefixes) {
+            if (!p.isEmpty() && name.startsWith(p)) return true;
+        }
+        for (String s : ignoreSuffixes) {
+            if (!s.isEmpty() && name.endsWith(s)) return true;
+        }
+
+        // Dotfiles & file tạm phổ biến
+        if (name.startsWith(".") || ".DS_Store".equals(name) || "Thumbs.db".equalsIgnoreCase(name)) {
+            return true;
+        }
+
+        // Glob matchers (áp trên đường dẫn tuyệt đối để dễ khớp **)
+        Path abs = path.toAbsolutePath().normalize();
+        for (PathMatcher m : ignoreMatchers) {
+            if (m.matches(abs)) return true;
+        }
+        return false;
+    }
+
+    // ---- Shutdown hook ----
+    private void installShutdownHook() {
+        if (shutdownHook != null) return;
+        shutdownHook = new Thread(() -> {
+            try { stop(); } catch (Exception ignored) {}
+        }, "FileWatcher-ShutdownHook");
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
+    }
+
+    private void removeShutdownHook() {
+        if (shutdownHook != null) {
+            try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
+            catch (IllegalStateException ignored) {}
+            shutdownHook = null;
+        }
     }
 }

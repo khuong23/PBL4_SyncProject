@@ -1,294 +1,525 @@
 package com.pbl4.syncproject.client.services;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
-
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.*;
 /**
- * Quản lý CSDL SQLite cục bộ (client-side cache).
- * Sử dụng Singleton pattern giống ClientConnectionManager.
+ * Dùng initializeDatabase(true) để reset sạch và tạo schema chuẩn.
  */
 public class LocalDatabaseManager {
 
     private static LocalDatabaseManager instance;
-    private static final String DB_URL = "jdbc:sqlite:client_cache.db";
-    
-    // --- ĐỊNH NGHĨA CÁC TRẠNG THÁI ĐỒNG BỘ ---
-    public static final String STATUS_SYNCED = "SYNCED";           // Đã đồng bộ (trùng khớp server)
-    public static final String STATUS_LOCAL_NEW = "LOCAL_NEW";     // File mới chỉ có ở client (màu XANH)
-    public static final String STATUS_LOCAL_STALE = "LOCAL_STALE"; // File đã sửa ở client (màu VÀNG)
-    public static final String STATUS_SERVER_NEW = "SERVER_NEW";   // File mới chỉ có ở server
-    public static final String STATUS_CONFLICT = "CONFLICT";       // Xung đột (màu ĐỎ)
-    public static final String STATUS_LOCAL_DELETED = "LOCAL_DELETED"; // File đã xóa ở client
-    // ------------------------------------------
-
-    private LocalDatabaseManager() {
-        // Tải driver
-        try {
-            Class.forName("org.sqlite.JDBC");
-        } catch (ClassNotFoundException e) {
-            System.err.println("Không tìm thấy driver SQLite. Hãy kiểm tra file pom.xml.");
-            e.printStackTrace();
-        }
-    }
-
-    /**
-     * Lấy instance duy nhất của ConnectionManager
-     */
     public static synchronized LocalDatabaseManager getInstance() {
-        if (instance == null) {
-            instance = new LocalDatabaseManager();
-        }
+        if (instance == null) instance = new LocalDatabaseManager();
         return instance;
     }
 
-    /**
-     * Lấy một kết nối mới đến CSDL SQLite.
-     * (Với SQLite, việc tạo kết nối rất nhẹ, không cần pool)
-     */
+    private static final String DB_URL = "jdbc:sqlite:client_cache.db";
+
+    // ===== Trạng thái đồng bộ =====
+    public static final String STATUS_SYNCED        = "SYNCED";
+    public static final String STATUS_LOCAL_NEW     = "LOCAL_NEW";
+    public static final String STATUS_LOCAL_STALE   = "LOCAL_STALE";
+    public static final String STATUS_SERVER_NEW    = "SERVER_NEW";
+    public static final String STATUS_CONFLICT      = "CONFLICT";
+    public static final String STATUS_LOCAL_DELETED = "LOCAL_DELETED";
+
+    private LocalDatabaseManager() {
+        try {
+            Class.forName("org.sqlite.JDBC");
+            ensureDbDirExists();
+        } catch (ClassNotFoundException e) {
+            System.err.println("Không tìm thấy driver SQLite. Kiểm tra pom.xml.");
+        }
+    }
+
+    private void ensureDbDirExists() {
+        try {
+            Path p = Path.of(DB_URL.replace("jdbc:sqlite:", ""));
+            Path parent = p.getParent();
+            if (parent != null) Files.createDirectories(parent);
+        } catch (Exception ignored) {}
+    }
+    // Luôn bật PRAGMA cần thiết
     public Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(DB_URL);
+        Connection c = DriverManager.getConnection(DB_URL);
+        try (Statement s = c.createStatement()) {
+            s.execute("PRAGMA foreign_keys = ON;");
+            s.execute("PRAGMA journal_mode = WAL;");
+            s.execute("PRAGMA synchronous = NORMAL;");
+            s.execute("PRAGMA busy_timeout = 5000;");
+        }
+        return c;
     }
-
     /**
-     * Khởi tạo CSDL: Tạo các bảng nếu chúng chưa tồn tại.
-     * Đây là nơi định nghĩa cấu trúc cache offline.
+     * Khởi tạo CSDL.
+     * fresh true = drop sạch & tạo chuẩn; false = chỉ tạo nếu chưa có.
+     * An toàn bằng transaction; không dùng writable_schema.
      */
-    public void initializeDatabase() {
-        String sqlCreateFolders = "CREATE TABLE IF NOT EXISTS Folders ("
-                + "FolderID INTEGER PRIMARY KEY AUTOINCREMENT, " // Local ID (stable, auto-increment)
-                + "ServerFolderID INTEGER UNIQUE, " // Server ID (from server response)
-                + "ParentFolderID INTEGER, " // Local FolderID of parent
-                + "FolderName TEXT NOT NULL, "
-                + "LocalPath TEXT, " // Đường dẫn thư mục trên máy client (UNIQUE qua index)
-                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED', " // SYNCED, LOCAL_CREATED, LOCAL_DELETED
-                + "FOREIGN KEY(ParentFolderID) REFERENCES Folders(FolderID)"
-                + ");";
-
-        String sqlCreateFiles = "CREATE TABLE IF NOT EXISTS Files ("
-                + "FileID INTEGER PRIMARY KEY AUTOINCREMENT, " // Local ID (stable, auto-increment)
-                + "ServerFileID INTEGER UNIQUE, " // Server ID (from server response)
-                + "FolderID INTEGER NOT NULL, " // Local FolderID (FK to Folders)
-                + "FileName TEXT NOT NULL, "
-                + "FileSize BIGINT, "
-                + "LocalPath TEXT NOT NULL UNIQUE, " // Đường dẫn file trên máy client
-                + "LastKnownHash CHAR(64), "       // Hash khi đồng bộ lần cuối
-                + "SyncStatus TEXT NOT NULL DEFAULT 'SYNCED', " // SYNCED, LOCAL_MODIFIED, LOCAL_DELETED, CONFLICT
-                + "FOREIGN KEY(FolderID) REFERENCES Folders(FolderID)"
-                + ");";
-
-        // --- THAY THẾ ĐỊNH NGHĨA BẢNG NÀY ---
-        String sqlCreateSyncQueue = "CREATE TABLE IF NOT EXISTS SyncQueue ("
-                + "QueueID INTEGER PRIMARY KEY AUTOINCREMENT, "
-                + "Action TEXT NOT NULL, " // UPLOAD, DELETE_FILE, CREATE_FOLDER, DELETE_FOLDER
-                
-                // Dùng cho File (UPLOAD, DELETE_FILE)
-                + "LocalPath TEXT, " 
-                
-                // Dùng cho Folder (CREATE_FOLDER, DELETE_FOLDER)
-                + "TargetFolderID INTEGER, "   // ID của folder (để DELETE_FOLDER)
-                + "TargetParentID INTEGER, " // ID cha (để CREATE_FOLDER)
-                + "TargetName TEXT, "        // Tên thư mục mới (để CREATE_FOLDER)
-                
-                + "RetryCount INTEGER DEFAULT 0"
-                + ");";
-        // -------------------------------------
-
-        // --- THÊM BẢNG NÀY (BƯỚC 6.1) ---
-        String sqlCreateSettings = "CREATE TABLE IF NOT EXISTS Settings ("
-                + "Key TEXT PRIMARY KEY, "
-                + "Value TEXT "
-                + ");";
-        // ---------------------
-
-        try (Connection conn = getConnection();
-             Statement stmt = conn.createStatement()) {
-            
-            // Thực thi tạo các bảng
-            stmt.execute(sqlCreateFolders);
-            stmt.execute(sqlCreateFiles);
-            stmt.execute(sqlCreateSyncQueue);
-            
-            // --- THỰC THI TẠO BẢNG MỚI ---
-            stmt.execute(sqlCreateSettings);
-            // ---------------------------
-            
-            // --- MIGRATION: Thêm các cột mới nếu chưa có ---
-            
-            // Migration 1: LocalPath
-            try {
-                stmt.execute("ALTER TABLE Folders ADD COLUMN LocalPath TEXT;");
-                System.out.println("✅ Migration: Đã thêm cột LocalPath vào bảng Folders.");
-            } catch (SQLException e) {
-                if (!e.getMessage().contains("duplicate column name")) {
-                    System.err.println("⚠️ Migration warning (LocalPath): " + e.getMessage());
+    public void initializeDatabase(boolean fresh) {
+        try (Connection c = getConnection()) {
+            c.setAutoCommit(false);
+            try (Statement st = c.createStatement()) {
+                if (fresh) {
+                    st.executeUpdate("DROP TABLE IF EXISTS Files;");
+                    st.executeUpdate("DROP TABLE IF EXISTS Folders;");
+                    st.executeUpdate("DROP TABLE IF EXISTS SyncQueue;");
+                    st.executeUpdate("DROP TABLE IF EXISTS Settings;");
                 }
+                createSchema(c);
+                st.execute("PRAGMA user_version = 1;");
             }
-            
-            // Migration 2: ServerFolderID
-            try {
-                stmt.execute("ALTER TABLE Folders ADD COLUMN ServerFolderID INTEGER UNIQUE;");
-                System.out.println("✅ Migration: Đã thêm cột ServerFolderID vào bảng Folders.");
-            } catch (SQLException e) {
-                if (!e.getMessage().contains("duplicate column name")) {
-                    System.err.println("⚠️ Migration warning (ServerFolderID): " + e.getMessage());
-                }
-            }
-            
-            // Migration 3: ServerFileID
-            try {
-                stmt.execute("ALTER TABLE Files ADD COLUMN ServerFileID INTEGER UNIQUE;");
-                System.out.println("✅ Migration: Đã thêm cột ServerFileID vào bảng Files.");
-            } catch (SQLException e) {
-                if (!e.getMessage().contains("duplicate column name")) {
-                    System.err.println("⚠️ Migration warning (ServerFileID): " + e.getMessage());
-                }
-            }
-            
-            // --- Tạo indexes (SAU KHI migration hoàn tất) ---
-            try {
-                stmt.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_localpath ON Folders(LocalPath);");
-                System.out.println("✅ Đã tạo/kiểm tra unique index cho Folders.LocalPath.");
-            } catch (SQLException e) {
-                if (!e.getMessage().contains("already exists")) {
-                    System.err.println("⚠️ Index warning: " + e.getMessage());
-                }
-            }
-            // -----------------------------------------------------------------
-            
-            System.out.println("✅ CSDL cục bộ (SQLite) đã được khởi tạo/sẵn sàng.");
-
+            c.commit();
+            System.out.println("✅ SQLite cache sẵn sàng (schema chuẩn, " + (fresh ? "fresh" : "warm") + ").");
         } catch (SQLException e) {
-            System.err.println("❌ Lỗi nghiêm trọng khi khởi tạo CSDL cục bộ:");
-            e.printStackTrace();
+            System.err.println("❌ Khởi tạo CSDL cục bộ lỗi: " + e.getMessage());
         }
     }
 
-    // --- THÊM 2 HÀM MỚI SAU VÀO CUỐI FILE (BƯỚC 6.1) ---
-
-    /**
-     * Lấy mốc thời gian đồng bộ cuối cùng từ CSDL.
-     * Mặc định là '0' (đầu mốc thời gian Unix) nếu chưa từng đồng bộ.
-     */
-    public Timestamp getLastSyncTime() {
-        String sql = "SELECT Value FROM Settings WHERE Key = 'last_sync_timestamp'";
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                return new Timestamp(Long.parseLong(rs.getString("Value")));
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
+    private void createSchema(Connection c) throws SQLException {
+        try (Statement st = c.createStatement()) {
+            // Folders: ánh xạ 1-1 với server folder, cascade con khi xóa
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS Folders (
+                  FolderID         INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ServerFolderID   INTEGER UNIQUE,
+                  ParentFolderID   INTEGER,
+                  FolderName       TEXT NOT NULL,
+                  LocalPath        TEXT,
+                  ServerVersion    INTEGER NOT NULL DEFAULT 0,
+                  SyncStatus       TEXT NOT NULL DEFAULT 'SYNCED',
+                  FOREIGN KEY(ParentFolderID) REFERENCES Folders(FolderID) ON DELETE CASCADE
+                );
+            """);
+            // Files: unique theo ServerFileID + unique LocalPath; chặn trùng tên trong cùng Folder
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS Files (
+                  FileID            INTEGER PRIMARY KEY AUTOINCREMENT,
+                  ServerFileID      INTEGER UNIQUE,
+                  FolderID          INTEGER NOT NULL,
+                  FileName          TEXT NOT NULL,
+                  FileSize          INTEGER,
+                  LocalPath         TEXT NOT NULL UNIQUE,
+                  LastKnownHash     TEXT,
+                  LastKnownVersion  INTEGER NOT NULL DEFAULT 0,
+                  SyncStatus        TEXT NOT NULL DEFAULT 'SYNCED',
+                  FOREIGN KEY(FolderID) REFERENCES Folders(FolderID) ON DELETE CASCADE
+                );
+            """);
+            // Hàng đợi đồng bộ
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS SyncQueue (
+                  QueueID        INTEGER PRIMARY KEY AUTOINCREMENT,
+                  Action         TEXT NOT NULL,      -- UPLOAD, DELETE_FILE, CREATE_FOLDER, DELETE_FOLDER
+                  LocalPath      TEXT,
+                  TargetFolderID INTEGER,
+                  TargetParentID INTEGER,
+                  TargetName     TEXT,
+                  RetryCount     INTEGER DEFAULT 0
+                );
+            """);
+            // Settings: since_seq…
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS Settings (
+                  Key   TEXT PRIMARY KEY,
+                  Value TEXT
+                );
+            """);
+            // Indexes
+            st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_localpath ON Folders(LocalPath);");
+            st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_serverid    ON Files(ServerFileID);");
+            st.execute("CREATE        INDEX IF NOT EXISTS idx_files_folder      ON Files(FolderID);");
+            st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_folder_name ON Files(FolderID, FileName);");
         }
-        // Mặc định: 1970-01-01 (Lấy tất cả mọi thứ)
-        return new Timestamp(0L); 
+    }
+    // ===== since_seq (change feed) =====
+    public long getSinceSeq() {
+        final String sql = "SELECT Value FROM Settings WHERE Key='since_seq'";
+        try (Connection c = getConnection();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) return Long.parseLong(rs.getString(1));
+        } catch (Exception ignored) {}
+        return 0L;
     }
 
-    /**
-     * Cập nhật mốc thời gian đồng bộ cuối cùng.
-     */
-    public void setLastSyncTime(Timestamp timestamp) {
-        String sql = "INSERT OR REPLACE INTO Settings (Key, Value) VALUES ('last_sync_timestamp', ?)";
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, String.valueOf(timestamp.getTime()));
+    public void setSinceSeq(long seq) {
+        final String sql = """
+            INSERT INTO Settings(Key, Value) VALUES('since_seq', ?)
+            ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value
+        """;
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, String.valueOf(seq));
             ps.executeUpdate();
         } catch (SQLException e) {
-            e.printStackTrace();
+            System.err.println("❌ setSinceSeq lỗi: " + e.getMessage());
         }
     }
-
-    /**
-     * Cập nhật trạng thái đồng bộ của file trong cache.
-     * @param localPath Đường dẫn tương đối của file (relativePath)
-     * @param newStatus Trạng thái mới (STATUS_SYNCED, STATUS_LOCAL_NEW, etc.)
-     */
-    public void updateFileStatus(String localPath, String newStatus) {
-        String sql = "UPDATE Files SET SyncStatus = ? WHERE LocalPath = ?";
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+    // ===== Cập nhật trạng thái file =====
+    public boolean updateFileStatus(String localPath, String newStatus) {
+        final String sql = "UPDATE Files SET SyncStatus=? WHERE LocalPath=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, newStatus);
             ps.setString(2, localPath);
-            int rowsAffected = ps.executeUpdate();
-            
-            if (rowsAffected > 0) {
-                System.out.println("✅ Đã cập nhật trạng thái file: " + localPath + " -> " + newStatus);
-            } else {
-                System.out.println("⚠️ Không tìm thấy file trong cache: " + localPath);
-            }
+            return ps.executeUpdate() > 0;
         } catch (SQLException e) {
-            System.err.println("❌ Lỗi khi cập nhật trạng thái file: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("❌ updateFileStatus lỗi: " + e.getMessage());
+            return false;
         }
     }
-
-    /**
-     * Cập nhật cả trạng thái và hash của file (dùng sau khi upload thành công).
-     * @param localPath Đường dẫn tương đối của file
-     * @param newStatus Trạng thái mới (thường là SYNCED)
-     * @param newHash Hash mới nhất của file (hash đã được upload)
-     */
-    public void updateFileStatusAndHash(String localPath, String newStatus, String newHash) {
-        String sql = "UPDATE Files SET SyncStatus = ?, LastKnownHash = ? WHERE LocalPath = ?";
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+    public boolean updateFileStatusAndHash(String localPath, String newStatus, String newHash) {
+        final String sql = "UPDATE Files SET SyncStatus=?, LastKnownHash=? WHERE LocalPath=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, newStatus);
             ps.setString(2, newHash);
             ps.setString(3, localPath);
-            int rowsAffected = ps.executeUpdate();
-            
-            if (rowsAffected > 0) {
-                System.out.println("✅ Đã cập nhật (Sync + Hash): " + localPath + " -> " + newStatus);
-            } else {
-                System.out.println("⚠️ Không tìm thấy file trong cache: " + localPath);
-            }
+            return ps.executeUpdate() > 0;
         } catch (SQLException e) {
-            System.err.println("❌ Lỗi khi cập nhật trạng thái và hash: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("❌ updateFileStatusAndHash lỗi: " + e.getMessage());
+            return false;
         }
     }
-
-    /**
-     * Ghi đè (Upsert) thông tin file vào CSDL cache sau khi tải về.
-     * Đảm bảo file được đánh dấu là SYNCED và có hash chính xác.
-     * @param serverFileId ID của file trên server
-     * @param localFolderId ID của folder local trong cache
-     * @param fileName Tên file
-     * @param fileSize Kích thước file (bytes)
-     * @param localPath Đường dẫn tương đối (relativePath)
-     * @param fileHash Hash SHA-256 của file vừa tải
-     */
-    public void upsertDownloadedFile(int serverFileId, int localFolderId, String fileName, 
-                                     long fileSize, String localPath, String fileHash) {
-                                         
-        // Câu lệnh này sẽ TẠO MỚI nếu file chưa có, hoặc CẬP NHẬT nếu đã có
-        String sql = "INSERT OR REPLACE INTO Files "
-                   + "(ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) "
-                   + "VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            
+    public boolean updateFileStatusHashAndVersion(String localPath, String newStatus, String newHash, int newVersion) {
+        final String sql = "UPDATE Files SET SyncStatus=?, LastKnownHash=?, LastKnownVersion=? WHERE LocalPath=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, newStatus);
+            ps.setString(2, newHash);
+            ps.setInt(3, newVersion);
+            ps.setString(4, localPath);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ updateFileStatusHashAndVersion lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+    // ===== Upsert khi down-sync =====
+    public void upsertDownloadedFile(int serverFileId,
+                                     int localFolderId,
+                                     String fileName,
+                                     long fileSize,
+                                     String localPath,
+                                     String fileHash,
+                                     int serverVersion) {
+        final String sql = """
+            INSERT INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, LastKnownVersion, SyncStatus)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'SYNCED')
+            ON CONFLICT(ServerFileID) DO UPDATE SET
+              FolderID         = excluded.FolderID,
+              FileName         = excluded.FileName,
+              FileSize         = excluded.FileSize,
+              LocalPath        = excluded.LocalPath,
+              LastKnownHash    = excluded.LastKnownHash,
+              LastKnownVersion = excluded.LastKnownVersion,
+              SyncStatus       = 'SYNCED'
+        """;
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, serverFileId);
             ps.setInt(2, localFolderId);
             ps.setString(3, fileName);
             ps.setLong(4, fileSize);
             ps.setString(5, localPath);
             ps.setString(6, fileHash);
-            ps.setString(7, STATUS_SYNCED); // Đánh dấu là đã đồng bộ
-            
+            ps.setInt(7, serverVersion);
             ps.executeUpdate();
-            System.out.println("✅ Đã Upsert (Download): " + localPath + " -> SYNCED");
-
         } catch (SQLException e) {
-            System.err.println("❌ Lỗi khi upsert file đã tải: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("❌ upsertDownloadedFile lỗi: " + e.getMessage());
         }
     }
-    // ----------------------------------------
+    public void upsertDownloadedFile(int serverFileId,
+                                     int localFolderId,
+                                     String fileName,
+                                     long fileSize,
+                                     String localPath,
+                                     String fileHash) {
+        upsertDownloadedFile(serverFileId, localFolderId, fileName, fileSize, localPath, fileHash, 0);
+    }
+    // ===== Tiện ích thêm =====
+    /** Dựng đường dẫn tương đối từ FolderID về gốc. */
+    public String buildRelativePath(int folderId) {
+        final String sql = """
+            WITH RECURSIVE chain(id, name, parent, depth) AS (
+              SELECT FolderID, FolderName, ParentFolderID, 0 FROM Folders WHERE FolderID = ?
+              UNION ALL
+              SELECT f.FolderID, f.FolderName, f.ParentFolderID, chain.depth + 1
+              FROM Folders f JOIN chain ON f.FolderID = chain.parent
+            )
+            SELECT GROUP_CONCAT(name, '/') AS rel
+            FROM (SELECT name FROM chain ORDER BY depth DESC);
+        """;
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, folderId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getString(1);
+            }
+        } catch (SQLException ignored) {}
+        return "";
+    }
+
+    // ==== Transaction helpers / batch apply =====
+    @FunctionalInterface
+    public interface SQLCallable<T> { T call(Connection c) throws Exception; }
+
+    public <T> T withTransaction(SQLCallable<T> work) {
+        try (Connection c = getConnection()) {
+            boolean old = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try {
+                T res = work.call(c);
+                c.commit();
+                c.setAutoCommit(old);
+                return res;
+            } catch (Exception ex) {
+                c.rollback();
+                c.setAutoCommit(old);
+                throw ex;
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Áp nhiều thay đổi server rồi cập nhật since_seq atomically. */
+    public boolean applyServerChangeBatch(long newSinceSeq, SQLCallable<Void> applier) {
+        try {
+            return withTransaction(c -> {
+                applier.call(c);
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO Settings(Key,Value) VALUES('since_seq',?) " +
+                                "ON CONFLICT(Key) DO UPDATE SET Value=excluded.Value")) {
+                    ps.setString(1, String.valueOf(newSinceSeq));
+                    ps.executeUpdate();
+                }
+                return true;
+            });
+        } catch (RuntimeException re) {
+            System.err.println("❌ applyServerChangeBatch rollback: " + re.getMessage());
+            return false;
+        }
+    }
+    // ==== Folder mapping / upsert ====
+    public Integer getLocalFolderIdByServerId(int serverFolderId) {
+        final String sql = "SELECT FolderID FROM Folders WHERE ServerFolderID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, serverFolderId);
+            try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return rs.getInt(1); }
+        } catch (SQLException ignored) {}
+        return null;
+    }
+
+    public Integer getLocalFolderIdByLocalPath(String localPath) {
+        final String sql = "SELECT FolderID FROM Folders WHERE LocalPath=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, localPath);
+            try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return rs.getInt(1); }
+        } catch (SQLException ignored) {}
+        return null;
+    }
+
+    private Integer findLocalFolderIdByServerId(Connection c, int serverFolderId) throws SQLException {
+        final String sql = "SELECT FolderID FROM Folders WHERE ServerFolderID=?";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, serverFolderId);
+            try (ResultSet rs = ps.executeQuery()) { if (rs.next()) return rs.getInt(1); }
+        }
+        return null;
+    }
+
+    /** Upsert folder theo ServerID, tự resolve parent theo ServerParentID, trả về FolderID local. */
+    public int upsertFolderByServerIds(int serverFolderId,
+                                       Integer parentServerFolderId,
+                                       String folderName,
+                                       String localPath,
+                                       int serverVersion) {
+        return withTransaction(c -> {
+            Integer parentLocalId = null;
+            if (parentServerFolderId != null) {
+                parentLocalId = findLocalFolderIdByServerId(c, parentServerFolderId);
+                if (parentLocalId == null) {
+                    // tạo placeholder parent (tối thiểu)
+                    try (PreparedStatement ps = c.prepareStatement(
+                            "INSERT INTO Folders(ServerFolderID, FolderName, ServerVersion, SyncStatus) " +
+                                    "VALUES(?, ?, 0, 'SYNCED')",
+                            Statement.RETURN_GENERATED_KEYS)) {
+                        ps.setInt(1, parentServerFolderId);
+                        ps.setString(2, "folder-" + parentServerFolderId);
+                        ps.executeUpdate();
+                        try (ResultSet g = ps.getGeneratedKeys()) { if (g.next()) parentLocalId = g.getInt(1); }
+                    }
+                }
+            }
+
+            try (PreparedStatement ps = c.prepareStatement("""
+                    INSERT INTO Folders(ServerFolderID, ParentFolderID, FolderName, LocalPath, ServerVersion, SyncStatus)
+                    VALUES(?, ?, ?, ?, ?, 'SYNCED')
+                    ON CONFLICT(ServerFolderID) DO UPDATE SET
+                      ParentFolderID = excluded.ParentFolderID,
+                      FolderName     = excluded.FolderName,
+                      LocalPath      = excluded.LocalPath,
+                      ServerVersion  = excluded.ServerVersion,
+                      SyncStatus     = 'SYNCED'
+                    """)) {
+                ps.setInt(1, serverFolderId);
+                if (parentLocalId == null) ps.setNull(2, Types.INTEGER); else ps.setInt(2, parentLocalId);
+                ps.setString(3, folderName);
+                ps.setString(4, localPath);
+                ps.setInt(5, serverVersion);
+                ps.executeUpdate();
+            }
+
+            Integer localId = findLocalFolderIdByServerId(c, serverFolderId);
+            return localId != null ? localId : -1;
+        });
+    }
+
+    // ==== Folder rename/move & cascade path ====
+    public boolean renameFolder(int folderId, String newName) {
+        final String sql = "UPDATE Folders SET FolderName=? WHERE FolderID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, newName);
+            ps.setInt(2, folderId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ renameFolder lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public boolean moveFolder(int folderId, Integer newParentFolderId) {
+        final String sql = "UPDATE Folders SET ParentFolderID=? WHERE FolderID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            if (newParentFolderId == null) ps.setNull(1, Types.INTEGER); else ps.setInt(1, newParentFolderId);
+            ps.setInt(2, folderId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ moveFolder lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Cập nhật LocalPath hàng loạt khi thư mục đổi tên/đổi vị trí. */
+    public int cascadeUpdateLocalPathsForFolder(int folderId, String oldPrefix, String newPrefix) {
+        int total = 0;
+        try (Connection c = getConnection()) {
+            c.setAutoCommit(false);
+            try (PreparedStatement ps1 = c.prepareStatement(
+                    "UPDATE Folders SET LocalPath = REPLACE(LocalPath, ?, ?) WHERE LocalPath LIKE ?")) {
+                ps1.setString(1, oldPrefix);
+                ps1.setString(2, newPrefix);
+                ps1.setString(3, oldPrefix + "/%");
+                total += ps1.executeUpdate();
+            }
+            try (PreparedStatement ps2 = c.prepareStatement(
+                    "UPDATE Files SET LocalPath = REPLACE(LocalPath, ?, ?) WHERE LocalPath LIKE ?")) {
+                ps2.setString(1, oldPrefix);
+                ps2.setString(2, newPrefix);
+                ps2.setString(3, oldPrefix + "/%");
+                total += ps2.executeUpdate();
+            }
+            c.commit();
+        } catch (SQLException e) {
+            System.err.println("❌ cascadeUpdateLocalPathsForFolder lỗi: " + e.getMessage());
+        }
+        return total;
+        // Lưu ý: vì UNIQUE(LocalPath), hãy đảm bảo newPrefix không gây va chạm trước khi gọi hàm này.
+    }
+
+    // ==== File move/rename / attach ServerFileID ====
+    public boolean moveOrRenameFileByServerId(int serverFileId, int newFolderId, String newFileName, String newLocalPath) {
+        final String sql = "UPDATE Files SET FolderID=?, FileName=?, LocalPath=?, SyncStatus='SYNCED' WHERE ServerFileID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, newFolderId);
+            ps.setString(2, newFileName);
+            ps.setString(3, newLocalPath);
+            ps.setInt(4, serverFileId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ moveOrRenameFileByServerId lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Sau khi upload thành công, gắn ServerFileID + cập nhật hash/version. */
+    public boolean attachServerFileId(String localPath, int serverFileId, String newHash, int newVersion) {
+        final String sql = "UPDATE Files SET ServerFileID=?, LastKnownHash=?, LastKnownVersion=?, SyncStatus='SYNCED' WHERE LocalPath=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, serverFileId);
+            ps.setString(2, newHash);
+            ps.setInt(3, newVersion);
+            ps.setString(4, localPath);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ attachServerFileId lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+    // ==== SyncQueue tiện ích ====
+    public static class QueueItem {
+        public long id;
+        public String action;
+        public String localPath;
+        public Integer targetFolderId;
+        public Integer targetParentId;
+        public String targetName;
+        public int retryCount;
+    }
+
+    public Long enqueue(String action, String localPath, Integer targetFolderId, Integer targetParentId, String targetName) {
+        final String sql = "INSERT INTO SyncQueue(Action, LocalPath, TargetFolderID, TargetParentID, TargetName) VALUES(?,?,?,?,?)";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            ps.setString(1, action);
+            if (localPath == null) ps.setNull(2, Types.VARCHAR); else ps.setString(2, localPath);
+            if (targetFolderId == null) ps.setNull(3, Types.INTEGER); else ps.setInt(3, targetFolderId);
+            if (targetParentId == null) ps.setNull(4, Types.INTEGER); else ps.setInt(4, targetParentId);
+            if (targetName == null) ps.setNull(5, Types.VARCHAR); else ps.setString(5, targetName);
+            ps.executeUpdate();
+            try (ResultSet g = ps.getGeneratedKeys()) { if (g.next()) return g.getLong(1); }
+        } catch (SQLException e) {
+            System.err.println("❌ enqueue lỗi: " + e.getMessage());
+        }
+        return null;
+    }
+
+    public QueueItem fetchNextQueueItem() {
+        final String sql = "SELECT QueueID, Action, LocalPath, TargetFolderID, TargetParentID, TargetName, RetryCount " +
+                "FROM SyncQueue ORDER BY QueueID ASC LIMIT 1";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql); ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                QueueItem q = new QueueItem();
+                q.id = rs.getLong(1);
+                q.action = rs.getString(2);
+                q.localPath = rs.getString(3);
+                int tf = rs.getInt(4); q.targetFolderId = rs.wasNull() ? null : tf;
+                int tp = rs.getInt(5); q.targetParentId = rs.wasNull() ? null : tp;
+                q.targetName = rs.getString(6);
+                q.retryCount = rs.getInt(7);
+                return q;
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ fetchNextQueueItem lỗi: " + e.getMessage());
+        }
+        return null;
+    }
+
+    public boolean incrementRetry(long queueId) {
+        final String sql = "UPDATE SyncQueue SET RetryCount=RetryCount+1 WHERE QueueID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, queueId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ incrementRetry lỗi: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public boolean removeQueueItem(long queueId) {
+        final String sql = "DELETE FROM SyncQueue WHERE QueueID=?";
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, queueId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ removeQueueItem lỗi: " + e.getMessage());
+            return false;
+        }
+    }
 }

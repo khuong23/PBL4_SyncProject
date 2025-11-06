@@ -6,9 +6,10 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.UserDAO;
-import com.pbl4.syncproject.server.dao.FilesDAO; // --- BƯỚC 7.2: THÊM IMPORT ---
+import com.pbl4.syncproject.server.dao.FilesDAO;
 import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
-// Không import com.pbl4.syncproject.common.model.Files để tránh xung đột với java.nio.file.Files
+import com.pbl4.syncproject.server.dao.ChangesDAO;
+
 import com.pbl4.syncproject.common.storage.StorageManager;
 
 import java.nio.file.Files;
@@ -20,7 +21,6 @@ import java.util.Base64;
 
 public class UploadFileHandler implements RequestHandler {
 
-    // Giới hạn upload base64 (có thể điều chỉnh)
     private static final long MAX_SIZE_BYTES = 50L * 1024 * 1024; // 50 MB
     private static final int ROOT_FOLDER_ID = 1;
 
@@ -29,6 +29,8 @@ public class UploadFileHandler implements RequestHandler {
         Path writtenPath = null;
 
         try (Connection connection = DatabaseManager.getConnection()) {
+            connection.setAutoCommit(false); // OCC + thay đổi nhiều bảng => cần transaction
+
             JsonObject data = req.getData();
             if (data == null
                     || !data.has("fileName") || data.get("fileName").isJsonNull()
@@ -46,16 +48,22 @@ public class UploadFileHandler implements RequestHandler {
             final String fileName = StorageManager.sanitizeName(rawFileName);
             if (fileName.isBlank()) return error("Tên file không hợp lệ");
 
-            // Base64 content (client cũ)
-            final String base64Content = data.get("fileContent").getAsString();
-            if (base64Content.isBlank()) return error("Nội dung file rỗng");
+            // Client có thể gửi kèm baseVersion (bắt buộc với UPDATE)
+            final Integer baseVersion = (data.has("baseVersion") && !data.get("baseVersion").isJsonNull())
+                    ? data.get("baseVersion").getAsInt()
+                    : null;
+
+            // (Tùy chọn) vẫn nhận lastKnownHash để cảnh báo sớm
+            final String clientBaseHash = (data.has("lastKnownHash") && !data.get("lastKnownHash").isJsonNull())
+                    ? data.get("lastKnownHash").getAsString()
+                    : null;
 
             // folderId: nếu không truyền/<=0 sẽ dùng root ID=1
             final int folderId = (data.has("folderId") && safeInt(data.get("folderId").getAsString()) > 0)
                     ? safeInt(data.get("folderId").getAsString())
                     : ROOT_FOLDER_ID;
 
-            // Đảm bảo folder tồn tại (đặc biệt là root=1)
+            // Đảm bảo folder tồn tại
             if (!folderExists(connection, folderId)) {
                 return error("Folder không tồn tại (folderId=" + folderId + ")");
             }
@@ -65,99 +73,147 @@ public class UploadFileHandler implements RequestHandler {
                 return error("Bạn không có quyền ghi (upload) vào thư mục này.");
             }
 
-            // --- BƯỚC 7.2: LOGIC PHÁT HIỆN XUNG ĐỘT ---
-            // Lấy hash gốc mà client gửi lên (hash của file trước khi client sửa)
-            String clientBaseHash = (data.has("lastKnownHash") && !data.get("lastKnownHash").isJsonNull()) 
-                    ? data.get("lastKnownHash").getAsString() 
-                    : null;
+            // ========== OCC: Đọc phiên bản hiện tại với khóa hàng ==========
+            Integer existingFileId = null;
+            Integer currentVersion = null;
+            String  currentHash    = null;
 
-            // Kiểm tra xem file này đã tồn tại trên server chưa
-            com.pbl4.syncproject.common.model.Files existingFile = FilesDAO.getFileByNameAndFolder(fileName, folderId);
-
-            if (existingFile != null && clientBaseHash != null) {
-                // File đã tồn tại, và client CÓ gửi hash gốc
-                String serverCurrentHash = existingFile.getFileHash();
-                
-                // Nếu hash gốc client gửi KHÁC với hash hiện tại trên server
-                // -> Người khác đã sửa file này trong lúc client offline
-                if (!clientBaseHash.equals(serverCurrentHash)) {
-                    System.err.println("🔥 XUNG ĐỘT: File '" + fileName + "' - Client hash: " + clientBaseHash + ", Server hash: " + serverCurrentHash);
-                    
-                    // Từ chối upload
-                    return new Response("error", "CONFLICT", null);
-                }
-            }
-            // Nếu không có xung đột: (1) Đây là file mới, hoặc (2) Client và server cùng 1 phiên bản -> Cho phép upload
-            // ------------------------------------------
-
-            // Giải mã base64 + kiểm soát kích thước
-            byte[] fileBytes = Base64.getDecoder().decode(base64Content);
-            if (fileBytes.length > MAX_SIZE_BYTES) {
-                return error("File quá lớn (> " + (MAX_SIZE_BYTES / (1024 * 1024)) + " MB). Hãy chuyển sang upload theo chunk.");
-            }
-
-            // 1) Resolve đường dẫn vật lý theo cây Folders
-            Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(connection, folderId);
-            Files.createDirectories(folderPath);
-            StorageManager.getInstance().assertWithinRoot(folderPath);
-
-            // 2) Ghi file
-            Path dst = folderPath.resolve(fileName).normalize();
-            StorageManager.getInstance().assertWithinRoot(dst); // bảo vệ PATH TRAVERSAL
-            Files.write(dst, fileBytes,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
-            writtenPath = dst; // để rollback nếu DB lỗi
-
-            // 3) Metadata
-            long fileSize = Files.size(dst);
-            String fileHash = computeSHA256(fileBytes);
-            Timestamp lastModified = new Timestamp(Files.getLastModifiedTime(dst).toMillis());
-            
-            boolean isUpdate = existingFile != null; // Cờ xác định đây là UPDATE hay UPLOAD mới
-            int newFileId = -1; // Biến để lưu FileID
-
-            // 4) Upsert DB: yêu cầu UNIQUE(FolderID, FileName)
             try (PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO Files (FolderID, FileName, FileSize, FileHash, LastModified) " +
-                            "VALUES (?,?,?,?,?) " +
-                            "ON DUPLICATE KEY UPDATE FileSize=VALUES(FileSize), FileHash=VALUES(FileHash), LastModified=VALUES(LastModified)",
-                    Statement.RETURN_GENERATED_KEYS
-            )) {
+                    "SELECT FileID, Version, FileHash FROM Files " +
+                            "WHERE FolderID=? AND FileName=? FOR UPDATE")) {
                 ps.setInt(1, folderId);
                 ps.setString(2, fileName);
-                ps.setLong(3, fileSize);
-                ps.setString(4, fileHash);
-                ps.setTimestamp(5, lastModified);
-                ps.executeUpdate();
-                
-                // Lấy FileID sau khi upsert
-                if (isUpdate) {
-                    newFileId = existingFile.getFileId(); // Nếu là update, dùng ID cũ
-                } else {
-                    try (ResultSet keys = ps.getGeneratedKeys()) { // Nếu là insert, lấy ID mới
-                        if (keys.next()) {
-                            newFileId = keys.getInt(1);
-                        }
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        existingFileId = rs.getInt("FileID");
+                        currentVersion = rs.getInt("Version");
+                        currentHash    = rs.getString("FileHash");
                     }
                 }
             }
 
-            // 5) Ghi lại lịch sử
-            if (newFileId > 0) {
-                String action = isUpdate ? SyncHistoryDAO.ACTION_UPDATE_FILE : SyncHistoryDAO.ACTION_UPLOAD_FILE;
-                SyncHistoryDAO.logAction(userId, action, newFileId, folderId);
+            // Nếu file đã tồn tại mà client KHÔNG gửi baseVersion => từ chối (bắt buộc theo phương án B)
+            if (existingFileId != null && baseVersion == null) {
+                JsonObject body = new JsonObject();
+                body.addProperty("currentVersion", currentVersion);
+                body.addProperty("reason", "Missing baseVersion for update");
+                connection.rollback();
+                return new Response("conflict", "Conflict occur", body);
             }
+
+            // Nếu có baseVersion nhưng KHÔNG khớp -> conflict
+            if (existingFileId != null && baseVersion != null && !baseVersion.equals(currentVersion)) {
+                JsonObject body = new JsonObject();
+                body.addProperty("currentVersion", currentVersion);
+                if (currentHash != null) body.addProperty("currentHash", currentHash);
+                connection.rollback();
+                return new Response("conflict", "Conflict occur", body);
+            }
+
+            // (Tuỳ chọn) Cảnh báo sớm bằng hash: nếu clientBaseHash khác serverHash => cũng coi là conflict
+            if (existingFileId != null && clientBaseHash != null && currentHash != null
+                    && !clientBaseHash.equals(currentHash)) {
+                JsonObject body = new JsonObject();
+                body.addProperty("currentVersion", currentVersion);
+                body.addProperty("currentHash", currentHash);
+                body.addProperty("reason", "Hash mismatch (another client updated)");
+                connection.rollback();
+                return new Response("conflict", "conflict occur", body);
+            }
+
+            // ========== Ghi nội dung vật lý ==========
+            final String base64Content = data.get("fileContent").getAsString();
+            if (base64Content.isBlank()) {
+                connection.rollback();
+                return error("Nội dung file rỗng");
+            }
+
+            byte[] fileBytes = Base64.getDecoder().decode(base64Content);
+            if (fileBytes.length > MAX_SIZE_BYTES) {
+                connection.rollback();
+                return error("File quá lớn (> " + (MAX_SIZE_BYTES / (1024 * 1024)) + " MB). Hãy chuyển sang upload theo chunk.");
+            }
+
+            Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(connection, folderId);
+            Files.createDirectories(folderPath);
+            StorageManager.getInstance().assertWithinRoot(folderPath);
+
+            Path dst = folderPath.resolve(fileName).normalize();
+            StorageManager.getInstance().assertWithinRoot(dst);
+            Files.write(dst, fileBytes,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
+            writtenPath = dst;
+
+            long fileSize = Files.size(dst);
+            String fileHash = computeSHA256(fileBytes);
+            Timestamp lastModified = new Timestamp(Files.getLastModifiedTime(dst).toMillis());
+
+            // ========== Cập nhật DB với Version/Changes ==========
+            int newVersion;
+            int fileId;
+
+            if (existingFileId == null) {
+                // CREATE: Version = 1
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "INSERT INTO Files (FolderID, FileName, FileSize, FileHash, LastModified, Version) " +
+                                "VALUES (?,?,?,?,?,1)", Statement.RETURN_GENERATED_KEYS)) {
+                    ps.setInt(1, folderId);
+                    ps.setString(2, fileName);
+                    ps.setLong(3, fileSize);
+                    ps.setString(4, fileHash);
+                    ps.setTimestamp(5, lastModified);
+                    ps.executeUpdate();
+                    try (ResultSet keys = ps.getGeneratedKeys()) {
+                        if (keys.next()) fileId = keys.getInt(1);
+                        else throw new SQLException("Không lấy được FileID sau khi INSERT");
+                    }
+                }
+                newVersion = 1;
+
+                // Ghi change feed
+                ChangesDAO.insertFileChange(connection, fileId, "CREATE", newVersion, fileHash, fileSize, folderId, fileName, userId);
+
+                // (Giữ lại lịch sử nếu bạn vẫn muốn)
+                SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPLOAD_FILE, fileId, folderId);
+
+            } else {
+                // UPDATE: Version = current + 1
+                newVersion = currentVersion + 1;
+                fileId = existingFileId;
+
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "UPDATE Files SET FileSize=?, FileHash=?, LastModified=?, Version=? WHERE FileID=?")) {
+                    ps.setLong(1, fileSize);
+                    ps.setString(2, fileHash);
+                    ps.setTimestamp(3, lastModified);
+                    ps.setInt(4, newVersion);
+                    ps.setInt(5, fileId);
+                    ps.executeUpdate();
+                }
+
+                // Ghi change feed
+                ChangesDAO.insertFileChange(connection, fileId, "UPDATE", newVersion, fileHash, fileSize, folderId, fileName, userId);
+
+                SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPDATE_FILE, fileId, folderId);
+            }
+
+            // Lấy lastSeq để trả luôn cho client (tiện cập nhật since_seq)
+            long lastSeq = ChangesDAO.getLastSeq(connection);
+
+            connection.commit();
 
             // 6) Trả data cho client
             JsonObject out = new JsonObject();
-            out.addProperty("fileId", newFileId); // Trả về ID
+            out.addProperty("fileId", fileId);
             out.addProperty("folderId", folderId);
             out.addProperty("fileName", fileName);
             out.addProperty("size", fileSize);
             out.addProperty("hash", fileHash);
             out.addProperty("lastModified", lastModified.getTime());
+            out.addProperty("newVersion", newVersion);
+            out.addProperty("seq", lastSeq);
 
             return new Response("success", "File uploaded successfully", out);
 

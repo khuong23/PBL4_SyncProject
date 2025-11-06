@@ -158,7 +158,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             initializeView(); // Đảm bảo mainView được khởi tạo
         }
         mainView.setFileService(fileService);
-        uploadManager = new UploadManager(networkService, mainView);
+        uploadManager = new UploadManager(networkService, mainView, LocalDatabaseManager.getInstance());
         
         // --- SỬA LẠI DÒNG NÀY ---
         // Dòng cũ: syncAgent = new SyncAgent(networkService, uploadManager);
