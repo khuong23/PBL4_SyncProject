@@ -790,6 +790,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private void openSettings() {
         openFXMLWindow("/com/pbl4/syncproject/settings.fxml",
                 "Cài đặt hệ thống", 600, 500);
+
     }
 
     /**
@@ -1212,6 +1213,11 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                 permController.reinitializeWithServices();
             }
             // Có thể thêm tương tự cho SettingsController nếu cần
+            if (controller instanceof SettingsController) {
+                SettingsController settingsController = (SettingsController) controller;
+                settingsController.setSyncAgent(this.syncAgent); // <— truyền agent vào đây
+
+            }
 
             Stage stage = new Stage();
             stage.setTitle(title);

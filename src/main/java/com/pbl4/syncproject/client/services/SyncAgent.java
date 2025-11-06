@@ -734,13 +734,16 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /** Server báo file sửa/tạo mới → tải về và cập nhật cache */
     private void handleServerFileUpdate(JsonObject data) {
         try {
-            int fileId = data.get("FileID").getAsInt();
-            String fileName = data.get("FileName").getAsString();
-            int folderId = data.get("FolderID").getAsInt();
+            Integer fileId   = jInt(data,   "fileId", "FileID", "id");
+            String  fileName = jStr(data,   "fileName", "FileName", "name");
+            Integer folderId = jInt(data,   "folderId", "FolderID", "folderID");
+            String  relPath  = jStr(data,   "relativePath"); // optional
 
-            String relativePath = data.has("relativePath")
-                    ? data.get("relativePath").getAsString()
-                    : fileName;
+            if (fileId == null || fileName == null || folderId == null) {
+                System.err.println("handleServerFileUpdate: thiếu field. data=" + data);
+                return;
+            }
+            String relativePath = (relPath != null && !relPath.isBlank()) ? relPath : fileName;
 
             System.out.println("[Down-Sync] Tải về: " + relativePath + " (ID=" + fileId + ")");
 
@@ -762,10 +765,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         }
     }
 
+
     /** Server báo file bị xóa (xử lý xung đột: LOCAL_STALE thắng) */
     private void handleServerFileDelete(JsonObject data) {
         try {
-            int serverFileId = data.get("FileID").getAsInt();
+            Integer serverFileId = jInt(data, "fileId", "FileID", "id");
+            if (serverFileId == null) {
+                System.err.println("handleServerFileDelete: thiếu fileId. data=" + data);
+                return;
+            }
 
             String localPathStr = null;
             String syncStatus = null;
@@ -785,7 +793,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         "⚠️ Xung đột: File '" + localPathStr + "' bạn đang sửa đã bị xóa ở nơi khác. Đã giữ lại phiên bản của bạn.",
                         com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
                 );
-                return; // giữ lại bản local, để up-sync upload khôi phục sau
+                return;
             }
 
             if (localPathStr != null) {
@@ -810,22 +818,26 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /** Server báo folder sửa/tạo mới → tạo local và cập nhật cache */
     private void handleServerFolderUpdate(JsonObject data) {
         try {
-            int serverFolderId = data.get("FolderID").getAsInt();
-            String folderName = data.get("FolderName").getAsString();
-            String relativePath = data.has("relativePath") ? data.get("relativePath").getAsString() : folderName;
+            Integer serverFolderId = jInt(data, "folderId", "FolderID", "folderID");
+            String  folderName     = jStr(data, "folderName", "FolderName", "name");
+            String  relativePath   = jStr(data, "relativePath");
+            Integer serverParentId = jInt(data, "parentFolderId", "ParentFolderID", "parentID");
 
-            Path localPath = syncDirectory.resolve(relativePath);
+            if (serverFolderId == null || folderName == null) {
+                System.err.println("handleServerFolderUpdate: thiếu field. data=" + data);
+                return;
+            }
+
+            String rel = (relativePath != null && !relativePath.isBlank()) ? relativePath : folderName;
+
+            Path localPath = syncDirectory.resolve(rel);
             Files.createDirectories(localPath);
 
-            Integer serverParentFolderId = (data.has("ParentFolderID") && !data.get("ParentFolderID").isJsonNull())
-                    ? data.get("ParentFolderID").getAsInt()
-                    : null;
-
             Integer localParentId = null;
-            if (serverParentFolderId != null) {
+            if (serverParentId != null) {
                 try (Connection conn = localDbManager.getConnection();
                      PreparedStatement ps = conn.prepareStatement("SELECT FolderID FROM Folders WHERE ServerFolderID=?")) {
-                    ps.setInt(1, serverParentFolderId);
+                    ps.setInt(1, serverParentId);
                     ResultSet rs = ps.executeQuery();
                     if (rs.next()) localParentId = rs.getInt("FolderID");
                 }
@@ -839,7 +851,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 if (localParentId != null) ps.setInt(2, localParentId);
                 else ps.setNull(2, java.sql.Types.INTEGER);
                 ps.setString(3, folderName);
-                ps.setString(4, relativePath);
+                ps.setString(4, rel);
                 ps.setString(5, LocalDatabaseManager.STATUS_SYNCED);
                 ps.executeUpdate();
             }
@@ -852,7 +864,11 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /** Server báo folder bị xóa (xử lý xung đột: nếu có file LOCAL_STALE thì giữ lại) */
     private void handleServerFolderDelete(JsonObject data) {
         try {
-            int serverFolderId = data.get("FolderID").getAsInt();
+            Integer serverFolderId = jInt(data, "folderId", "FolderID", "folderID");
+            if (serverFolderId == null) {
+                System.err.println("handleServerFolderDelete: thiếu folderId. data=" + data);
+                return;
+            }
 
             String localPathStr = null;
             try (Connection conn = localDbManager.getConnection();
@@ -1025,13 +1041,19 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         for (JsonElement el : rootFolders) {
             JsonObject fo = asObj(el);
             if (fo == null) continue;
-            int serverFolderId = fo.get("folderId").getAsInt();
-            String folderName  = fo.get("folderName").getAsString();
 
-            String rel = folderName; // relative path
+            Integer serverFolderId = jInt(fo, "folderId", "FolderID", "folderID", "id");
+            String  folderName     = jStr(fo, "folderName", "FolderName", "name");
+
+            if (serverFolderId == null || folderName == null) {
+                System.err.println("mirror root: thiếu folderId/folderName. obj=" + fo);
+                continue;
+            }
+
+            String rel = folderName;
             Files.createDirectories(syncDirectory.resolve(rel));
 
-            Integer localParentId = 1; // parent của root-level là row root id=1
+            Integer localParentId = 1;
             try (Connection conn = localDbManager.getConnection();
                  PreparedStatement ps = conn.prepareStatement(
                          "INSERT OR REPLACE INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) " +
@@ -1067,8 +1089,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             JsonObject fo = asObj(el);
             if (fo == null) continue;
 
-            int childServerId = fo.get("folderId").getAsInt();
-            String name = fo.get("folderName").getAsString();
+            Integer childServerId = jInt(fo, "folderId", "FolderID", "folderID", "id");
+            String  name          = jStr(fo, "folderName", "FolderName", "name");
+            if (childServerId == null || name == null) {
+                System.err.println("mirror child: thiếu folderId/folderName. obj=" + fo);
+                continue;
+            }
 
             String childRel = relativePath.isEmpty() ? name : (relativePath + "/" + name);
             Files.createDirectories(syncDirectory.resolve(childRel));
@@ -1119,10 +1145,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             JsonObject fo = asObj(el);
             if (fo == null) continue;
 
-            int fileId   = fo.get("fileId").getAsInt();
-            String name  = fo.get("fileName").getAsString();
-            long size    = fo.has("fileSize") ? fo.get("fileSize").getAsLong() : 0L;
-            String hash  = fo.has("fileHash") ? fo.get("fileHash").getAsString() : "";
+            Integer fileId = jInt(fo, "fileId", "FileID", "id");
+            String  name   = jStr(fo, "fileName", "FileName", "name");
+            Long    size   = jLong(fo, "fileSize", "size");
+            String  hash   = jStr(fo, "fileHash", "hash");
+
+            if (fileId == null || name == null) {
+                System.err.println("mirror files: thiếu fileId/fileName. obj=" + fo);
+                continue;
+            }
 
             String relPath = relativePath.isEmpty() ? name : (relativePath + "/" + name);
 
@@ -1137,11 +1168,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     fileId,
                     localFolderId,
                     name,
-                    size,
+                    size != null ? size : 0L,
                     relPath.replace("\\", "/"),
-                    hash
+                    hash != null ? hash : ""
             );
         }
+
     }
     // =================== HẾT PHẦN MIRROR ===================
 
@@ -1262,6 +1294,41 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             suppressWatcherEvents.set(false);
             isRefreshing.set(false);
         }
+    }
+    // ==== JSON safe getters ====
+    private Integer jInt(JsonObject o, String... keys) {
+        if (o == null) return null;
+        for (String k : keys) {
+            if (o.has(k) && !o.get(k).isJsonNull()) {
+                try {
+                    return o.get(k).getAsInt();
+                } catch (Exception ignore) {
+                    try { return (int) o.get(k).getAsLong(); } catch (Exception ignore2) {}
+                    try { return Integer.parseInt(o.get(k).getAsString()); } catch (Exception ignore3) {}
+                }
+            }
+        }
+        return null;
+    }
+    private Long jLong(JsonObject o, String... keys) {
+        if (o == null) return null;
+        for (String k : keys) {
+            if (o.has(k) && !o.get(k).isJsonNull()) {
+                try { return o.get(k).getAsLong(); } catch (Exception ignore) {
+                    try { return Long.parseLong(o.get(k).getAsString()); } catch (Exception ignore2) {}
+                }
+            }
+        }
+        return null;
+    }
+    private String jStr(JsonObject o, String... keys) {
+        if (o == null) return null;
+        for (String k : keys) {
+            if (o.has(k) && !o.get(k).isJsonNull()) {
+                try { return o.get(k).getAsString(); } catch (Exception ignore) {}
+            }
+        }
+        return null;
     }
 
 }
