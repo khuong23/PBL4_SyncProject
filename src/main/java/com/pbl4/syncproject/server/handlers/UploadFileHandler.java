@@ -60,9 +60,18 @@ public class UploadFileHandler implements RequestHandler {
                     : null;
 
             // folderId: nếu không truyền/<=0 sẽ dùng root ID=1
-            final int folderId = (data.has("folderId") && safeInt(data.get("folderId").getAsString()) > 0)
-                    ? safeInt(data.get("folderId").getAsString())
-                    : ROOT_FOLDER_ID;
+            Integer requestedFolderId = null;
+            if (data.has("folderId")) {
+                requestedFolderId = safeInt(data.get("folderId").getAsString());
+            }
+            
+            int folderId;
+            if (requestedFolderId == null || requestedFolderId <= 0) {
+                System.err.println("⚠️ [UploadHandler] Phát hiện FolderID không hợp lệ (" + requestedFolderId + "), tự động gán về Root (ID=1)");
+                folderId = ROOT_FOLDER_ID;
+            } else {
+                folderId = requestedFolderId;
+            }
 
             // Đảm bảo folder tồn tại
             if (!folderExists(connection, folderId)) {
@@ -194,6 +203,9 @@ public class UploadFileHandler implements RequestHandler {
 
             if (existingFileId == null) {
                 // CREATE: Version = 1
+                System.out.println("📝 [UploadHandler] CREATE file: " + fileName + 
+                        " (FolderID=" + folderId + ", Version=1)");
+                
                 try (PreparedStatement ps = connection.prepareStatement(
                         "INSERT INTO Files (FolderID, FileName, FileSize, FileHash, LastModified, Version) " +
                                 "VALUES (?,?,?,?,?,1)", Statement.RETURN_GENERATED_KEYS)) {
@@ -215,11 +227,17 @@ public class UploadFileHandler implements RequestHandler {
 
                 // (Giữ lại lịch sử nếu bạn vẫn muốn)
                 SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPLOAD_FILE, fileId, folderId);
+                
+                System.out.println("✅ [UploadHandler] Đã tạo FileID=" + fileId + ", ghi Changes với Version=1, Hash=" + fileHash);
 
             } else {
                 // UPDATE: Version = current + 1
                 newVersion = currentVersion + 1;
                 fileId = existingFileId;
+                
+                System.out.println("📝 [UploadHandler] UPDATE file: " + fileName + 
+                        " (FileID=" + fileId + ", FolderID=" + folderId + 
+                        ", currentVersion=" + currentVersion + " → newVersion=" + newVersion + ")");
 
                 try (PreparedStatement ps = connection.prepareStatement(
                         "UPDATE Files SET FileSize=?, FileHash=?, LastModified=?, Version=? WHERE FileID=?")) {
@@ -235,6 +253,8 @@ public class UploadFileHandler implements RequestHandler {
                 ChangesDAO.insertFileChange(connection, fileId, "UPDATE", newVersion, fileHash, fileSize, folderId, fileName, userId);
 
                 SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPDATE_FILE, fileId, folderId);
+                
+                System.out.println("✅ [UploadHandler] Đã ghi Changes với Version=" + newVersion + ", Hash=" + fileHash);
             }
 
             // Lấy lastSeq để trả luôn cho client (tiện cập nhật since_seq)
