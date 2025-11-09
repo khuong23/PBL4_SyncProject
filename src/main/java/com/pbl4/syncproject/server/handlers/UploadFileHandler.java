@@ -49,7 +49,8 @@ public class UploadFileHandler implements RequestHandler {
             if (fileName.isBlank()) return error("Tên file không hợp lệ");
 
             // Client có thể gửi kèm baseVersion (bắt buộc với UPDATE)
-            final Integer baseVersion = (data.has("baseVersion") && !data.get("baseVersion").isJsonNull())
+            // FIX: Không dùng final để có thể điều chỉnh khi cần
+            Integer baseVersion = (data.has("baseVersion") && !data.get("baseVersion").isJsonNull())
                     ? data.get("baseVersion").getAsInt()
                     : null;
 
@@ -92,13 +93,14 @@ public class UploadFileHandler implements RequestHandler {
                 }
             }
 
-            // Nếu file đã tồn tại mà client KHÔNG gửi baseVersion => từ chối (bắt buộc theo phương án B)
+            // FIX: Nếu file đã tồn tại mà client KHÔNG gửi baseVersion
+            // → Client không biết file đã tồn tại (cache bị xóa/mất đồng bộ)
+            // → Chấp nhận như UPDATE với baseVersion = 0, nhưng CẢNH BÁO conflict
             if (existingFileId != null && baseVersion == null) {
-                JsonObject body = new JsonObject();
-                body.addProperty("currentVersion", currentVersion);
-                body.addProperty("reason", "Missing baseVersion for update");
-                connection.rollback();
-                return new Response("conflict", "Conflict occur", body);
+                // Thay vì từ chối ngay, hãy coi baseVersion = 0 và kiểm tra hash
+                baseVersion = 0;
+                System.out.println("⚠️ Client upload file đã tồn tại mà không gửi baseVersion. File: " + fileName + ", FileID: " + existingFileId);
+                // Tiếp tục xử lý như UPDATE, sẽ kiểm tra version/hash ở bước tiếp theo
             }
 
             // Nếu có baseVersion nhưng KHÔNG khớp -> conflict
