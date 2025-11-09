@@ -2,6 +2,7 @@ package com.pbl4.syncproject.client.controllers;
 
 import com.pbl4.syncproject.client.services.SyncAgent;
 import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
 import javafx.scene.control.*;
@@ -15,6 +16,7 @@ import java.util.ResourceBundle;
 
 // --- THÊM IMPORT NÀY ---
 import com.pbl4.syncproject.client.services.SettingsService;
+import javafx.stage.StageStyle;
 // -----------------------
 
 public class SettingsController implements Initializable {
@@ -230,41 +232,54 @@ public class SettingsController implements Initializable {
     // Chạy refresh ở background + hiển thị progress modal
     private void doFullRefreshNow() {
         if (syncAgent == null) {
-            showErrorMessage("Chưa gắn SyncAgent cho SettingsController. Hãy gọi setSyncAgent() khi mở màn hình cài đặt.");
+            showErrorMessage("Chưa gắn SyncAgent cho SettingsController");
             return;
         }
 
-        // Dialog progress đơn giản
-        ProgressIndicator pi = new ProgressIndicator();
-        Dialog<Void> dlg = new Dialog<>();
-        dlg.setTitle("Đang làm mới dữ liệu…");
-        dlg.setHeaderText("Đang reset DB cục bộ và tải mới từ server");
-        dlg.getDialogPane().setContent(pi);
-        dlg.getDialogPane().getButtonTypes().clear();
-        dlg.initOwner(btnApply.getScene().getWindow());
-        dlg.initModality(Modality.APPLICATION_MODAL);
-        dlg.show();
+        Alert wait = new Alert(Alert.AlertType.INFORMATION);
+        wait.initStyle(StageStyle.UNDECORATED);
+        wait.initOwner(btnApply.getScene().getWindow());
+        wait.setTitle("Đang làm mới dữ liệu...");
+        wait.setHeaderText("Đang reset DB cục bộ và tải mới từ server");
+        wait.getDialogPane().setContent(new ProgressIndicator());
+        wait.getDialogPane().getButtonTypes().clear();
 
-        // Chạy background
-        Thread t = new Thread(() -> {
-            try {
+        // Store reference to the window
+        Stage waitStage = (Stage) wait.getDialogPane().getScene().getWindow();
+        waitStage.setOnCloseRequest(e -> e.consume()); // Prevent manual closing
+        wait.show();
+
+        Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() throws Exception {
                 syncAgent.forceFullRefreshFromSettings();
-                // xong -> đóng dialog + báo thành công
-                Platform.runLater(() -> {
-                    dlg.close();
-                    showSuccessMessage("Đã làm mới dữ liệu thành công!");
-                });
-            } catch (Exception ex) {
-                Platform.runLater(() -> {
-                    dlg.close();
-                    showErrorMessage("Làm mới thất bại: " + ex.getMessage());
-                });
+                return null;
             }
-        }, "Force-Full-Refresh");
-        t.setDaemon(true);
-        t.start();
-    }
+        };
 
+        task.setOnSucceeded(e -> {
+            Platform.runLater(() -> {
+                if (waitStage.isShowing()) {
+                    waitStage.close();
+                }
+                showSuccessMessage("Đã làm mới dữ liệu thành công!");
+                // Close settings window
+                ((Stage) btnApply.getScene().getWindow()).close();
+            });
+        });
+
+        task.setOnFailed(e -> {
+            Platform.runLater(() -> {
+                if (waitStage.isShowing()) {
+                    waitStage.close();
+                }
+                Throwable ex = task.getException();
+                showErrorMessage("Làm mới thất bại: " + (ex != null ? ex.getMessage() : "Không rõ lỗi"));
+            });
+        });
+
+        new Thread(task, "Force-Full-Refresh").start();
+    }
 
 
     @FXML
