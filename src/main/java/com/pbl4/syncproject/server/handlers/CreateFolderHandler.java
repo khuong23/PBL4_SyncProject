@@ -6,6 +6,7 @@ import com.pbl4.syncproject.common.dispatcher.RequestHandler;
 import com.pbl4.syncproject.common.jsonhandler.Request;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.pbl4.syncproject.common.storage.StorageManager;
+import com.pbl4.syncproject.server.dao.ChangesDAO;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.UserDAO;
@@ -72,8 +73,8 @@ public class CreateFolderHandler implements RequestHandler {
             // 1) Insert DB
             int newId;
             try (PreparedStatement ins = conn.prepareStatement(
-                    "INSERT INTO Folders (ParentFolderID, FolderName, LastModified, CreatedAt) " +
-                            "VALUES (?, ?, NOW(), NOW())",
+                    "INSERT INTO Folders (ParentFolderID, FolderName, LastModified, CreatedAt, Version) " +
+                            "VALUES (?, ?, NOW(), NOW(), 1)",
                     Statement.RETURN_GENERATED_KEYS)) {
                 ins.setInt(1, parentId);
                 ins.setString(2, folderName);
@@ -97,6 +98,10 @@ public class CreateFolderHandler implements RequestHandler {
             }
 
             // 3) Ghi lại lịch sử
+            int version = getFolderVersion(conn, newId); // helper bên dưới
+            long seq = ChangesDAO.insertFolderChange(
+                    conn, newId, "CREATE", folderName, parentId, userId, version);
+
             SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_CREATE_FOLDER, null, newId);
 
             // 4) Trả về
@@ -105,6 +110,7 @@ public class CreateFolderHandler implements RequestHandler {
             out.addProperty("folderName", folderName);
             out.addProperty("parentFolderId", parentId);
             out.add("lastModified", JsonNull.INSTANCE); // client có thể refresh lại list để lấy thời gian
+            out.addProperty("version", version);
 
             return new Response("success", "Tạo thư mục thành công", out);
 
@@ -148,4 +154,14 @@ public class CreateFolderHandler implements RequestHandler {
     private Response error(String msg) {
         return new Response("error", msg, null);
     }
+    private int getFolderVersion(Connection conn, int folderId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT Version FROM Folders WHERE FolderID = ?")) {
+            ps.setInt(1, folderId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
 }

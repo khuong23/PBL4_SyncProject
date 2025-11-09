@@ -8,6 +8,7 @@ import com.pbl4.syncproject.common.storage.StorageManager;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.UserDAO;
+import com.pbl4.syncproject.server.dao.ChangesDAO; // <-- thêm
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -19,74 +20,114 @@ public class DeleteFolderHandler implements RequestHandler {
 
     @Override
     public Response handle(Request req) {
+        Path folderPath = null;
+
         try (Connection conn = DatabaseManager.getConnection()) {
+            conn.setAutoCommit(false); // TX cho OCC + change-feed
+
             JsonObject data = (req != null) ? req.getData() : null;
             if (data == null || !data.has("folderId") || data.get("folderId").isJsonNull()) {
                 return err("Thiếu 'folderId'");
             }
-            // Lấy userId để kiểm tra quyền
+
+            // Auth & quyền
             int userId = UserDAO.getUserIdFromRequest(req);
-            if (userId <= 0) {
-                return err("Cần xác thực người dùng (userId không hợp lệ)");
-            }
-            
+            if (userId <= 0) return err("Cần xác thực người dùng");
+
             int folderId = data.get("folderId").getAsInt();
             boolean recursive = data.has("recursive") && !data.get("recursive").isJsonNull()
                     && data.get("recursive").getAsBoolean();
 
-            // Kiểm tra các điều kiện cơ bản
+            // OCC tuỳ chọn
+            Integer baseVersion = (data.has("baseVersion") && !data.get("baseVersion").isJsonNull())
+                    ? data.get("baseVersion").getAsInt() : null;
+
             if (folderId == ROOT_ID) return err("Không thể xoá thư mục gốc (ID=1)");
-            
-            // QUAN TRỌNG: Kiểm tra quyền TRƯỚC KHI kiểm tra folder tồn tại
-            // (để tránh leak thông tin về folder của người khác)
-            if (!UserDAO.hasFolderPermission(userId, folderId, "DELETE")) {
-                return err("Bạn không có quyền xóa (DELETE) thư mục này.");
+//             doi quyen xoa folder sau
+//            if (!UserDAO.hasFolderPermission(userId, folderId, "DELETE")) {
+//                return err("Bạn không có quyền xóa (DELETE) thư mục này.");
+//            }
+
+            // Lấy meta + khoá hàng
+            FolderMeta meta = getFolderMetaForUpdate(conn, folderId);
+            if (meta == null) {
+                conn.rollback();
+                return err("Folder không tồn tại (ID=" + folderId + ")");
             }
-            
-            // Sau khi đã xác nhận có quyền, mới kiểm tra folder có tồn tại
-            if (!folderExists(conn, folderId)) return err("Folder không tồn tại (ID=" + folderId + ")");
 
-            // Resolve đường dẫn vật lý một lần
-            Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, folderId);
-            StorageManager.getInstance().assertWithinRoot(folderPath);
+            // OCC
+            if (baseVersion != null && !baseVersion.equals(meta.version)) {
+                conn.rollback();
+                JsonObject body = new JsonObject();
+                body.addProperty("currentVersion", meta.version);
+                return new Response("error", "Conflict: Version mismatch", body);
+            }
 
+            // Nếu không recursive: folder phải rỗng (DB)
             if (!recursive) {
-                // Chỉ xoá khi rỗng (DB)
                 int subCount = countChildFolders(conn, folderId);
                 int fileCount = countFilesInFolder(conn, folderId);
                 if (subCount > 0 || fileCount > 0) {
+                    conn.rollback();
                     JsonObject info = new JsonObject();
                     info.addProperty("childFolders", subCount);
                     info.addProperty("childFiles", fileCount);
                     return new Response("error", "Thư mục không rỗng. Thêm 'recursive=true' để xoá toàn bộ.", info);
                 }
-
-                // FS: xoá nếu rỗng
-                deleteDirIfEmpty(folderPath);
-
-                // DB: xoá 1 dòng (không cần txn phức tạp)
-                deleteFolderRow(conn, folderId);
-
-                JsonObject out = new JsonObject();
-                out.addProperty("folderId", folderId);
-                out.addProperty("recursive", false);
-                return new Response("success", "Xoá thư mục trống thành công", out);
             }
 
-            // recursive = true
-            // FS: xoá cả cây dưới thư mục này (nếu tồn tại)
-            deleteFsTree(folderPath);
+            // Resolve đường dẫn trước khi xoá DB (để còn dùng sau commit)
+            folderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, folderId);
+            StorageManager.getInstance().assertWithinRoot(folderPath);
 
-            // DB: xoá 1 dòng, phần còn lại CASCADE
-            deleteFolderRow(conn, folderId);
-            
-            // Ghi lại lịch sử hành động xóa thư mục
+            // Ghi change-feed: FOLDER_DELETE (FolderId = parent/container), Version = current+1
+            int newVersion = meta.version + 1;
+            long seq = ChangesDAO.insertFolderChange(
+                    conn, folderId, "DELETE", meta.name, meta.parentId, userId, newVersion
+            );
+
+            // Xoá DB với OCC
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "DELETE FROM Folders WHERE FolderID=? AND Version=?")) {
+                ps.setInt(1, folderId);
+                ps.setInt(2, meta.version);
+                int rows = ps.executeUpdate();
+                if (rows == 0) {
+                    conn.rollback();
+                    JsonObject body = new JsonObject();
+                    body.addProperty("currentVersion", meta.version);
+                    return new Response("error", "Conflict: Folder changed by another update", body);
+                }
+            }
+
+            // Lịch sử
             SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_DELETE_FOLDER, null, folderId);
+
+            conn.commit();
+
+            // Sau COMMIT mới xóa trên FS (tránh DB-ok nhưng FS-fail làm lệch)
+            boolean removedFromDisk = false;
+            try {
+                if (recursive) {
+                    deleteFsTree(folderPath);
+                    removedFromDisk = true;
+                } else {
+                    removedFromDisk = deleteDirIfEmpty(folderPath);
+                }
+            } catch (Exception fsEx) {
+                System.err.println("[WARN] Delete FS failed: " + fsEx.getMessage());
+                // có thể log lại để dọn rác thủ công sau
+            }
 
             JsonObject out = new JsonObject();
             out.addProperty("folderId", folderId);
-            out.addProperty("recursive", true);
-            return new Response("success", "Xoá thư mục (đệ quy) thành công", out);
+            out.addProperty("parentFolderId", meta.parentId);
+            out.addProperty("recursive", recursive);
+            out.addProperty("newVersion", newVersion);
+            out.addProperty("seq", seq);
+            out.addProperty("removedFromDisk", removedFromDisk);
+
+            return new Response("success", "Xoá thư mục thành công", out);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -94,56 +135,67 @@ public class DeleteFolderHandler implements RequestHandler {
         }
     }
 
-    // ===== Helpers (tối giản) =====
+    // ===== Helpers =====
 
-    private boolean folderExists(Connection c, int folderId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM Folders WHERE FolderID=? LIMIT 1")) {
+    private static class FolderMeta {
+        int id;
+        Integer parentId; // có thể null nếu root
+        String name;
+        int version;
+    }
+
+    private FolderMeta getFolderMetaForUpdate(Connection c, int folderId) throws SQLException {
+        String sql = "SELECT FolderID, ParentFolderID, FolderName, Version " +
+                "FROM Folders WHERE FolderID=? FOR UPDATE";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, folderId);
-            try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                FolderMeta m = new FolderMeta();
+                m.id = rs.getInt("FolderID");
+                m.parentId = (Integer) rs.getObject("ParentFolderID");
+                m.name = rs.getString("FolderName");
+                m.version = rs.getInt("Version");
+                return m;
+            }
         }
     }
 
     private int countChildFolders(Connection c, int parentId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM Folders WHERE ParentFolderID=?")) {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COUNT(*) FROM Folders WHERE ParentFolderID=?")) {
             ps.setInt(1, parentId);
             try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1); }
         }
     }
 
     private int countFilesInFolder(Connection c, int folderId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM Files WHERE FolderID=?")) {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT COUNT(*) FROM Files WHERE FolderID=?")) {
             ps.setInt(1, folderId);
             try (ResultSet rs = ps.executeQuery()) { rs.next(); return rs.getInt(1); }
         }
     }
 
-    private void deleteFolderRow(Connection c, int folderId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("DELETE FROM Folders WHERE FolderID=?")) {
-            ps.setInt(1, folderId);
-            int rows = ps.executeUpdate();
-            if (rows == 0) throw new SQLException("Không xoá được folderID=" + folderId);
-        }
-    }
-
-    /** Xoá thư mục rỗng trên FS (im lặng nếu không tồn tại hoặc không rỗng). */
-    private void deleteDirIfEmpty(Path dir) {
+    private boolean deleteDirIfEmpty(Path dir) {
         try {
-            if (!Files.exists(dir)) return;
+            if (!Files.exists(dir)) return true; // coi như đã "xóa"
             try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir)) {
-                if (ds.iterator().hasNext()) return; // không rỗng
+                if (ds.iterator().hasNext()) return false; // không rỗng
             }
             Files.deleteIfExists(dir);
             System.out.println("[INFO]  Deleted empty FS folder: " + dir);
+            return true;
         } catch (Exception e) {
             System.err.println("[WARN]  Cannot delete empty FS folder: " + dir + " - " + e.getMessage());
+            return false;
         }
     }
 
-    /** Xoá toàn bộ cây trên FS cho thư mục cho trước. */
     private void deleteFsTree(Path root) throws IOException {
         if (!Files.exists(root)) return;
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            @Override public FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
                 StorageManager.getInstance().assertWithinRoot(file);
                 Files.deleteIfExists(file);
                 return FileVisitResult.CONTINUE;

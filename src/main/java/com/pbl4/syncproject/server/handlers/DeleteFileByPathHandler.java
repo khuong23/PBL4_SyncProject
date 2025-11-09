@@ -122,13 +122,13 @@ public class DeleteFileByPathHandler implements RequestHandler {
 
     /**
      * Tìm folderId từ relative path (ví dụ: "Folder1/subfolder")
-     * Nếu folderPath rỗng, trả về root folder (parentId=0)
+     * Nếu folderPath rỗng, trả về root folder (ParentFolderID=0)
      */
     private int resolveFolderIdFromPath(Connection conn, String folderPath) throws SQLException {
         if (folderPath == null || folderPath.isBlank()) {
-            // Root folder: tìm folder có ParentID=0 hoặc NULL
+            // Root folder: tìm folder có ParentFolderID=0 hoặc NULL
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT FolderID FROM Folders WHERE ParentID IS NULL OR ParentID=0 LIMIT 1")) {
+                    "SELECT FolderID FROM Folders WHERE ParentFolderID IS NULL OR ParentFolderID=1 LIMIT 1")) {
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) return rs.getInt("FolderID");
                 }
@@ -141,7 +141,7 @@ public class DeleteFileByPathHandler implements RequestHandler {
 
         // Bắt đầu từ root
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT FolderID FROM Folders WHERE ParentID IS NULL OR ParentID=0 LIMIT 1")) {
+                "SELECT FolderID FROM Folders WHERE ParentFolderID IS NULL OR ParentFolderID=1 LIMIT 1")) {
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) currentFolderId = rs.getInt("FolderID");
             }
@@ -153,7 +153,7 @@ public class DeleteFileByPathHandler implements RequestHandler {
         for (String folderName : parts) {
             if (folderName.isBlank()) continue;
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT FolderID FROM Folders WHERE ParentID=? AND FolderName=? LIMIT 1")) {
+                    "SELECT FolderID FROM Folders WHERE ParentFolderID=? AND FolderName=? LIMIT 1")) {
                 ps.setInt(1, currentFolderId);
                 ps.setString(2, folderName);
                 try (ResultSet rs = ps.executeQuery()) {
