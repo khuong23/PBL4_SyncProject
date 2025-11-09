@@ -85,11 +85,12 @@ public class DownloadFileHandler implements RequestHandler {
             out.addProperty("fileName", meta.fileName);
             out.addProperty("size", size);
             out.addProperty("hash", sha256);
+            out.addProperty("version", meta.version);  // THÊM VERSION
             out.addProperty("encoding", "base64");
             out.addProperty("fileContent", base64);
             out.addProperty("lastModified", meta.lastModified != null ? meta.lastModified.getTime() : null);
 
-            System.out.println("[INFO]  Downloaded file: " + meta.fileName + " (" + size + " bytes)");
+            System.out.println("[INFO]  Downloaded file: " + meta.fileName + " (v" + meta.version + ", " + size + " bytes)");
             return new Response("success", "Download successful", out);
 
         } catch (Exception e) {
@@ -101,7 +102,7 @@ public class DownloadFileHandler implements RequestHandler {
     // ===== Helpers =====
 
     private FileMeta findByFileId(Connection conn, int fileId) throws SQLException {
-        String sql = "SELECT FileID, FolderID, FileName, FileSize, FileHash, LastModified, CreatedAt FROM Files WHERE FileID = ? LIMIT 1";
+        String sql = "SELECT FileID, FolderID, FileName, FileSize, FileHash, Version, LastModified, CreatedAt FROM Files WHERE FileID = ? LIMIT 1";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, fileId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -112,7 +113,7 @@ public class DownloadFileHandler implements RequestHandler {
     }
 
     private FileMeta findByFolderAndName(Connection conn, int folderId, String fileName) throws SQLException {
-        String sql = "SELECT FileID, FolderID, FileName, FileSize, FileHash, LastModified, CreatedAt FROM Files WHERE FolderID = ? AND FileName = ? LIMIT 1";
+        String sql = "SELECT FileID, FolderID, FileName, FileSize, FileHash, Version, LastModified, CreatedAt FROM Files WHERE FolderID = ? AND FileName = ? LIMIT 1";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, folderId);
             ps.setString(2, fileName);
@@ -129,6 +130,7 @@ public class DownloadFileHandler implements RequestHandler {
         m.folderId = rs.getInt("FolderID");
         m.fileName = rs.getString("FileName");
         m.dbHash = rs.getString("FileHash");
+        m.version = rs.getInt("Version");
         m.lastModified = rs.getTimestamp("LastModified");
         m.createdAt = rs.getTimestamp("CreatedAt");
         return m;
@@ -157,6 +159,7 @@ public class DownloadFileHandler implements RequestHandler {
         int folderId;
         String fileName;
         String dbHash;
+        int version;
         Timestamp lastModified;
         Timestamp createdAt;
     }
