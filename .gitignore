@@ -42,3 +42,6 @@ build/
 # Bỏ qua file CSDL cache của client
 *.db
 *.db-journal
+
+#client setting
+client_settings.properties
