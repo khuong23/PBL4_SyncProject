@@ -6,7 +6,6 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
 import com.google.gson.JsonObject;
 import com.pbl4.syncproject.server.dao.DatabaseManager;
 import com.pbl4.syncproject.server.dao.UserDAO;
-import com.pbl4.syncproject.server.dao.FilesDAO;
 import com.pbl4.syncproject.server.dao.SyncHistoryDAO;
 import com.pbl4.syncproject.server.dao.ChangesDAO;
 
@@ -61,8 +60,13 @@ public class UploadFileHandler implements RequestHandler {
 
             // folderId: nếu không truyền/<=0 sẽ dùng root ID=1
             Integer requestedFolderId = null;
-            if (data.has("folderId")) {
-                requestedFolderId = safeInt(data.get("folderId").getAsString());
+            if (data.has("folderId") && !data.get("folderId").isJsonNull()) {
+                try {
+                    // Client gửi folderId dưới dạng NUMBER, không phải string!
+                    requestedFolderId = data.get("folderId").getAsInt();
+                } catch (Exception e) {
+                    System.err.println("⚠️ [UploadHandler] Không thể parse folderId: " + e.getMessage());
+                }
             }
             
             int folderId;
@@ -302,10 +306,6 @@ public class UploadFileHandler implements RequestHandler {
         StringBuilder sb = new StringBuilder(hashBytes.length * 2);
         for (byte b : hashBytes) sb.append(String.format("%02x", b));
         return sb.toString();
-    }
-
-    private int safeInt(String s) {
-        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return -1; }
     }
 
     private Response error(String msg) {
