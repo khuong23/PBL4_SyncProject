@@ -112,6 +112,42 @@ public class UploadFileHandler implements RequestHandler {
                 return new Response("conflict", "Conflict occur", body);
             }
 
+            // VALIDATION: Kiểm tra tính toàn vẹn dữ liệu DB vs File vật lý
+            if (existingFileId != null && currentHash != null) {
+                // Đọc file vật lý hiện tại trên server để kiểm tra
+                try {
+                    Path folderPath = StorageManager.getInstance().resolveFolderPathFromDb(connection, folderId);
+                    Path existingFilePath = folderPath.resolve(fileName).normalize();
+                    
+                    if (Files.exists(existingFilePath)) {
+                        byte[] existingBytes = Files.readAllBytes(existingFilePath);
+                        String actualFileHash = computeSHA256(existingBytes);
+                        
+                        // PHÁT HIỆN DATA CORRUPTION
+                        if (!currentHash.equals(actualFileHash)) {
+                            System.err.println("⚠️⚠️⚠️ PHÁT HIỆN DATA CORRUPTION ⚠️⚠️⚠️");
+                            System.err.println("File: " + fileName + " (FileID=" + existingFileId + ")");
+                            System.err.println("DB hash:   " + currentHash);
+                            System.err.println("File hash: " + actualFileHash);
+                            System.err.println("Version:   " + currentVersion);
+                            System.err.println("→ AUTO-FIX: Cập nhật DB để khớp với file vật lý...");
+                            
+                            // AUTO-FIX: Cập nhật DB để khớp với file vật lý
+                            try (PreparedStatement psAutoFix = connection.prepareStatement(
+                                    "UPDATE Files SET FileHash = ? WHERE FileID = ?")) {
+                                psAutoFix.setString(1, actualFileHash);
+                                psAutoFix.setInt(2, existingFileId);
+                                psAutoFix.executeUpdate();
+                                currentHash = actualFileHash; // Cập nhật biến local
+                                System.err.println("✅ Đã sửa DB!");
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    System.err.println("⚠️ Không thể validate file integrity: " + e.getMessage());
+                }
+            }
+            
             // (Tuỳ chọn) Cảnh báo sớm bằng hash: nếu clientBaseHash khác serverHash => cũng coi là conflict
             if (existingFileId != null && clientBaseHash != null && currentHash != null
                     && !clientBaseHash.equals(currentHash)) {

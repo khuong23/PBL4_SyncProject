@@ -76,21 +76,48 @@ public class DownloadFileHandler implements RequestHandler {
             byte[] bytes = Files.readAllBytes(filePath);
             String base64 = Base64.getEncoder().encodeToString(bytes);
 
-            // Hash thực tế (tùy chọn: so với DB)
-            String sha256 = computeSHA256(bytes);
+            // FIX: Sử dụng hash từ DB thay vì tính lại từ file vật lý
+            // Đảm bảo client nhận đúng hash mà server đang tracking trong DB
+            String sha256FromFile = computeSHA256(bytes);
+            String sha256FromDB = meta.dbHash;
+            
+            // PHÁT HIỆN DATA CORRUPTION và AUTO-FIX
+            if (sha256FromDB != null && !sha256FromDB.equals(sha256FromFile)) {
+                System.err.println("⚠️⚠️⚠️ PHÁT HIỆN DATA CORRUPTION ⚠️⚠️⚠️");
+                System.err.println("File: " + meta.fileName + " (FileID=" + meta.fileId + ")");
+                System.err.println("DB hash:   " + sha256FromDB);
+                System.err.println("File hash: " + sha256FromFile);
+                System.err.println("Version:   " + meta.version);
+                System.err.println("→ AUTO-FIX: Cập nhật DB để khớp với file vật lý...");
+                
+                // AUTO-FIX: Cập nhật DB
+                try (PreparedStatement psAutoFix = conn.prepareStatement(
+                        "UPDATE Files SET FileHash = ? WHERE FileID = ?")) {
+                    psAutoFix.setString(1, sha256FromFile);
+                    psAutoFix.setInt(2, meta.fileId);
+                    psAutoFix.executeUpdate();
+                    sha256FromDB = sha256FromFile; // Cập nhật biến local
+                    System.err.println("✅ Đã sửa DB!");
+                } catch (SQLException e) {
+                    System.err.println("❌ Không thể auto-fix: " + e.getMessage());
+                }
+            }
+            
+            // Luôn trả hash từ DB (đây là "source of truth")
+            String hashToReturn = (sha256FromDB != null && !sha256FromDB.isEmpty()) ? sha256FromDB : sha256FromFile;
 
             JsonObject out = new JsonObject();
             out.addProperty("fileId", meta.fileId);
             out.addProperty("folderId", meta.folderId);
             out.addProperty("fileName", meta.fileName);
             out.addProperty("size", size);
-            out.addProperty("hash", sha256);
-            out.addProperty("version", meta.version);  // THÊM VERSION
+            out.addProperty("hash", hashToReturn); // Trả hash từ DB
+            out.addProperty("version", meta.version);
             out.addProperty("encoding", "base64");
             out.addProperty("fileContent", base64);
             out.addProperty("lastModified", meta.lastModified != null ? meta.lastModified.getTime() : null);
 
-            System.out.println("[INFO]  Downloaded file: " + meta.fileName + " (v" + meta.version + ", " + size + " bytes)");
+            System.out.println("[INFO]  Downloaded file: " + meta.fileName + " (v" + meta.version + ", hash=" + hashToReturn + ", " + size + " bytes)");
             return new Response("success", "Download successful", out);
 
         } catch (Exception e) {
