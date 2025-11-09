@@ -67,7 +67,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     @FXML private Button btnPermissions;
     @FXML private Button btnSettings;
     @FXML private Button btnSearch;
-    
+
     // Notification UI Components
     @FXML private StackPane notificationButtonWrapper;
     @FXML private Button btnNotifications;
@@ -98,7 +98,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private NotificationManager notificationManager;
     private String syncDirectoryPath; // đường dẫn thư mục đồng bộ
     private SettingsService settingsService; // --- THÊM DÒNG NÀY ---
-    
+
     // PopOver để hiển thị thông báo
     private PopOver notificationPopOver;
 
@@ -108,7 +108,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private String currentUser = null; // Sẽ được set từ LoginController sau khi đăng nhập
     private String currentDirectory = "/shared"; // Kept for compatibility, but now tracking folderId
     private int currentFolderId = -1; // Track selected folder ID for uploads and operations
-    
+
     // Map để theo dõi các TreeItem đã tải con hay chưa (cho lazy loading)
     private final Map<TreeItem<Folders>, Boolean> loadedChildrenMap = new HashMap<>();
 
@@ -119,16 +119,16 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         // Tải cài đặt ngay lập tức
         this.settingsService.loadSettings();
         // -----------------------
-        
+
         // Chỉ initialize view và setup handlers
         // Services sẽ được khởi tạo sau khi login thành công
         initializeView();
         setupEventHandlers();
-        
+
         // Khởi tạo NotificationManager
         this.notificationManager = NotificationManager.getInstance();
         setupNotificationCenter();
-        
+
         // loadInitialData() sẽ được gọi sau trong setServerAddress()
     }
 
@@ -141,17 +141,17 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     public void setServerAddress(String serverIP, int serverPort, String username) {
         // Lưu username từ login
         this.currentUser = username;
-        
+
         // Initialize services with server address from login
         networkService = new NetworkService(serverIP, serverPort);
         networkService.setCurrentUsername(currentUser); // Set username cho NetworkService
-        
+
         // --- SỬA LẠI: Thêm LocalDatabaseManager vào FileService ---
         fileService = new FileService(networkService, LocalDatabaseManager.getInstance());
         // -----------------------------------------------------------
-        
+
         folderService = new FolderService(networkService);
-        
+
         // --- SỬA LẠI: Khởi tạo mainView trước ---
         // mainView phải được khởi tạo trước
         if (mainView == null) {
@@ -159,7 +159,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         }
         mainView.setFileService(fileService);
         uploadManager = new UploadManager(networkService, mainView, LocalDatabaseManager.getInstance());
-        
+
         // --- SỬA LẠI DÒNG NÀY ---
         // Dòng cũ: syncAgent = new SyncAgent(networkService, uploadManager);
         // Dòng mới:
@@ -176,15 +176,15 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // Được gọi mỗi khi trạng thái online/offline thay đổi
             onNetworkStatusChanged(isNowOnline);
         });
-        
+
         // Khởi động "nhịp tim"
         networkService.startHeartbeat();
         // --------------------------------------------------
-        
+
         // --- SỬA LẠI: Lấy đường dẫn đồng bộ TỪ FILE CÀI ĐẶT ---
         String defaultSyncDir = System.getProperty("user.home") + File.separator + "SyncData";
         this.syncDirectoryPath = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, defaultSyncDir);
-        
+
         // Khởi tạo DownloadService với đường dẫn ĐÚNG
         this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), this.syncDirectoryPath);
         System.out.println("✅ Khởi tạo DownloadService với đường dẫn: " + this.syncDirectoryPath);
@@ -193,7 +193,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         // Load initial data sau khi đã có services
         loadInitialData();
     }
-    
+
     /**
      * Deprecated: Sử dụng setServerAddress(serverIP, serverPort, username) thay thế
      * Method này giữ lại để tương thích ngược
@@ -291,7 +291,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private void loadInitialData() {
         // SỬA ĐỔI: KHÔNG setup tree ở đây nữa, MainView đã setup rồi
         // setupDirectoryTreeWithLazyLoading(); // <-- COMMENT ĐI vì MainView đã có setupDirectoryTree()
-        
+
         startSyncAgent();
         mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
     }
@@ -320,14 +320,14 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                 }
             }
         });
-        
+
         // Listener để chọn thư mục
         treeDirectory.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
             if (newVal != null && newVal.getValue() != null) {
                 handleDirectorySelected(newVal.getValue());
             }
         });
-        
+
         // Tải các thư mục gốc lần đầu
         mainView.refreshFolderTree();
     }
@@ -342,10 +342,10 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // Đã tải rồi, không cần tải lại
             return;
         }
-        
+
         // Đánh dấu là đang tải
         loadedChildrenMap.put(parentItem, true);
-        
+
         // Hiển thị trạng thái đang tải
         Folders loadingFolder = new Folders();
         loadingFolder.setFolderId(-1);
@@ -355,42 +355,42 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         parentItem.getChildren().add(loadingItem);
 
         TaskWrapper.executeAsync(
-            "Đang tải thư mục...",
-            () -> {
-                try {
-                    // Lấy folderId của parent. Nếu là gốc ảo, ID là 0.
-                    int parentId = parentItem.getValue().getFolderId();
-                    Response response = networkService.getFolderTree(parentId);
-                    if (response != null && "success".equals(response.getStatus())) {
-                        return fileService.parseFoldersFromResponse(response);
+                "Đang tải thư mục...",
+                () -> {
+                    try {
+                        // Lấy folderId của parent. Nếu là gốc ảo, ID là 0.
+                        int parentId = parentItem.getValue().getFolderId();
+                        Response response = networkService.getFolderTree(parentId);
+                        if (response != null && "success".equals(response.getStatus())) {
+                            return fileService.parseFoldersFromResponse(response);
+                        }
+                        throw new Exception(response != null ? response.getMessage() : "Lỗi không xác định");
+                    } catch (Exception e) {
+                        throw new RuntimeException("Không thể tải cây thư mục: " + e.getMessage(), e);
                     }
-                    throw new Exception(response != null ? response.getMessage() : "Lỗi không xác định");
-                } catch (Exception e) {
-                    throw new RuntimeException("Không thể tải cây thư mục: " + e.getMessage(), e);
-                }
-            },
-            (List<Folders> children) -> {
-                // Xóa item "Đang tải..." và thêm các con thực sự
-                parentItem.getChildren().clear();
-                if (children != null && !children.isEmpty()) {
-                    for (Folders folder : children) {
-                        TreeItem<Folders> childItem = createTreeItemWithLazyLoading(folder);
-                        parentItem.getChildren().add(childItem);
+                },
+                (List<Folders> children) -> {
+                    // Xóa item "Đang tải..." và thêm các con thực sự
+                    parentItem.getChildren().clear();
+                    if (children != null && !children.isEmpty()) {
+                        for (Folders folder : children) {
+                            TreeItem<Folders> childItem = createTreeItemWithLazyLoading(folder);
+                            parentItem.getChildren().add(childItem);
+                        }
                     }
-                }
-                // Không cần placeholder nếu không có con, TreeView sẽ tự ẩn mũi tên
-            },
-            (String error) -> {
-                parentItem.getChildren().clear(); // Xóa "Đang tải..."
-                loadedChildrenMap.put(parentItem, false); // Đặt lại để có thể thử lại
-                // Thêm lại placeholder để user có thể thử lại
-                addPlaceholderNode(parentItem);
-                mainView.showAlert("Lỗi", "Không thể tải danh sách thư mục: " + error, IMainView.AlertType.ERROR);
-            },
-            mainView
+                    // Không cần placeholder nếu không có con, TreeView sẽ tự ẩn mũi tên
+                },
+                (String error) -> {
+                    parentItem.getChildren().clear(); // Xóa "Đang tải..."
+                    loadedChildrenMap.put(parentItem, false); // Đặt lại để có thể thử lại
+                    // Thêm lại placeholder để user có thể thử lại
+                    addPlaceholderNode(parentItem);
+                    mainView.showAlert("Lỗi", "Không thể tải danh sách thư mục: " + error, IMainView.AlertType.ERROR);
+                },
+                mainView
         );
     }
-    
+
     /**
      * Thêm node placeholder để hiển thị mũi tên expand
      */
@@ -402,17 +402,17 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             item.getChildren().add(new TreeItem<>(placeholder));
         }
     }
-    
+
     /**
      * Tạo một TreeItem và thêm listener lazy loading với placeholder
      */
     private TreeItem<Folders> createTreeItemWithLazyLoading(Folders folder) {
         TreeItem<Folders> item = new TreeItem<>(folder);
-        
+
         // Thêm placeholder để hiển thị mũi tên expand
         // Node này sẽ bị xóa khi thực sự tải con
         addPlaceholderNode(item);
-        
+
         // Đánh dấu chưa tải con
         loadedChildrenMap.put(item, false);
 
@@ -422,8 +422,8 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             if (newValue) {
                 Boolean loaded = loadedChildrenMap.get(item);
                 // Kiểm tra xem có phải là placeholder không (1 con duy nhất với ID = 0)
-                boolean hasOnlyPlaceholder = item.getChildren().size() == 1 && 
-                                            item.getChildren().get(0).getValue().getFolderId() == 0;
+                boolean hasOnlyPlaceholder = item.getChildren().size() == 1 &&
+                        item.getChildren().get(0).getValue().getFolderId() == 0;
                 if ((loaded == null || !loaded) && hasOnlyPlaceholder) {
                     loadAndPopulateChildren(item);
                 }
@@ -501,11 +501,11 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // Dòng cũ: String syncDir = System.getProperty("user.home") + File.separator + "SyncFolder";
             String syncDir = this.syncDirectoryPath; // Sử dụng đường dẫn từ cài đặt
             // -------------------------------------------------------------------------------
-            
+
             // --- ĐĂNG KÝ LISTENER ĐỂ NHẬN THÔNG BÁO TỪ SYNCAGENT ---
             syncAgent.setEventListener(this);
             // --------------------------------------------------------
-            
+
             syncAgent.start(syncDir);
             System.out.println("✅ Started sync agent for directory: " + syncDir);
             updateSyncAgentStatus();
@@ -547,12 +547,12 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         // Chuyển sang UI thread để cập nhật giao diện
         Platform.runLater(() -> {
             System.out.println("🔄 [MainController] Nhận tín hiệu thay đổi local, đang refresh UI...");
-            
+
             // Refresh lại danh sách file để hiển thị màu mới
             if (currentFolderId > 0) {
                 loadDirectoryFiles(currentFolderId);
             }
-            
+
             // Cập nhật status message
             mainView.setStatusMessage("📝 Phát hiện thay đổi file local");
         });
@@ -675,7 +675,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     @FXML
     private void refresh() {
         System.out.println("🔄 Refresh button clicked - Resetting folder tree with lazy loading...");
-        
+
         // Reset folder tree về trạng thái ban đầu (lazy loading)
         mainView.refreshFolderTree();
 
@@ -725,13 +725,13 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                     // Sau khi tải lên thành công, tải lại danh sách tệp cho thư mục hiện tại
                     loadDirectoryFiles(currentFolderId);
                     mainView.setStatusMessage(message);
-                    
+
                     // Gửi thông báo
                     notificationManager.addNotification(
-                        "Bạn đã tải lên thành công file: " + file.getName(),
-                        NotificationItem.NotificationType.FILE_UPLOAD
+                            "Bạn đã tải lên thành công file: " + file.getName(),
+                            NotificationItem.NotificationType.FILE_UPLOAD
                     );
-                    
+
                 } else {
                     mainView.setStatusMessage("Upload thất bại: " + message);
                 }
@@ -832,7 +832,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // 1. Get sync directory from settings
             SettingsService settingsService = SettingsService.getInstance();
             String syncDirectory = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, null);
-            
+
             if (syncDirectory == null || syncDirectory.isEmpty()) {
                 mainView.showAlert("Lỗi", "Thư mục đồng bộ chưa được thiết lập!", IMainView.AlertType.ERROR);
                 return;
@@ -869,7 +869,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                 mainView.showAlert("Lỗi", "Không thể tính hash file: " + e.getMessage(), IMainView.AlertType.ERROR);
                 return;
             }
-            
+
             // 5. Validate file before upload
             if (uploadManager != null && !uploadManager.validateFileForUpload(localFile)) {
                 return;
@@ -877,13 +877,13 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
 
             // 6. Upload file using UploadManager
             mainView.setStatusMessage("Đang upload " + fileItem.getFileName() + "...");
-            
+
             // Use folderId as string (UploadManager expects currentDirectory as string)
             String currentDirectory = String.valueOf(fileItem.getFolderId());
-            
+
             // Make hash final to use in callback
             final String uploadedFileHash = currentFileHash;
-            
+
             if (uploadManager != null) {
                 uploadManager.uploadFile(localFile, currentDirectory, new UploadManager.UploadResultCallback() {
                     @Override
@@ -891,13 +891,13 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                         if (success) {
                             // LỖI ĐÃ SỬA: Update both status AND hash
                             LocalDatabaseManager dbManager = LocalDatabaseManager.getInstance();
-                            dbManager.updateFileStatusAndHash(relativePath, 
-                                                             LocalDatabaseManager.STATUS_SYNCED, 
-                                                             uploadedFileHash);
-                            
+                            dbManager.updateFileStatusAndHash(relativePath,
+                                    LocalDatabaseManager.STATUS_SYNCED,
+                                    uploadedFileHash);
+
                             // Update status message
                             mainView.setStatusMessage("✅ Upload thành công: " + fileItem.getFileName());
-                            
+
                             // Refresh UI to show updated status
                             if (currentFolderId > 0) {
                                 loadDirectoryFiles(currentFolderId);
@@ -927,12 +927,12 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // 1. Lấy đường dẫn file đầy đủ trên máy
             SettingsService settingsService = SettingsService.getInstance();
             String syncDir = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, "");
-            
+
             if (syncDir == null || syncDir.isEmpty()) {
                 mainView.showAlert("Lỗi", "Thư mục đồng bộ chưa được thiết lập!", IMainView.AlertType.ERROR);
                 return;
             }
-            
+
             // Lấy relativePath
             String relativePath = fileItem.getRelativePath();
             if (relativePath == null || relativePath.isEmpty()) {
@@ -948,26 +948,26 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                 boolean download = mainView.showConfirmDialog(
                         "File chưa có trên máy",
                         "File '" + fileItem.getFileName() + "' chưa có trên máy.\n" +
-                        "Bạn có muốn tải về và mở không?"
+                                "Bạn có muốn tải về và mở không?"
                 );
-                
+
                 if (!download) {
                     return;
                 }
-                
+
                 // Tải file về trước
                 mainView.setStatusMessage("Đang tải file về để mở...");
-                
+
                 if (downloadService != null) {
                     TaskWrapper.executeAsync(
                             "Đang tải về: " + fileItem.getFileName(),
-                            () -> { 
-                                try { 
-                                    downloadService.downloadAndSaveFile(fileItem); 
-                                    return true; 
-                                } catch (Exception e) { 
-                                    throw new RuntimeException(e); 
-                                } 
+                            () -> {
+                                try {
+                                    downloadService.downloadAndSaveFile(fileItem);
+                                    return true;
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
                             },
                             (success) -> {
                                 mainView.setStatusMessage("✅ Tải về thành công. Đang mở file...");
@@ -976,23 +976,23 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                             },
                             (error) -> {
                                 mainView.setStatusMessage("❌ Không thể tải file: " + error);
-                                mainView.showAlert("Lỗi", "Không thể tải file về để mở: " + error, 
-                                                 IMainView.AlertType.ERROR);
+                                mainView.showAlert("Lỗi", "Không thể tải file về để mở: " + error,
+                                        IMainView.AlertType.ERROR);
                             },
                             mainView
                     );
                 } else {
                     mainView.showAlert("Lỗi", "DownloadService chưa được khởi tạo!", IMainView.AlertType.ERROR);
                 }
-                
+
             } else {
                 // 3. File đã có -> Mở ngay
                 openFileWithDesktop(fileToOpen);
             }
 
         } catch (Exception e) {
-            mainView.showAlert("Lỗi Mở File", "Không thể mở file: " + e.getMessage(), 
-                             IMainView.AlertType.ERROR);
+            mainView.showAlert("Lỗi Mở File", "Không thể mở file: " + e.getMessage(),
+                    IMainView.AlertType.ERROR);
             e.printStackTrace();
         }
     }
@@ -1002,19 +1002,19 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      */
     private void openFileWithDesktop(File file) {
         if (!Desktop.isDesktopSupported()) {
-            mainView.showAlert("Lỗi", "Hệ điều hành không hỗ trợ mở file tự động.", 
-                             IMainView.AlertType.ERROR);
+            mainView.showAlert("Lỗi", "Hệ điều hành không hỗ trợ mở file tự động.",
+                    IMainView.AlertType.ERROR);
             return;
         }
-        
+
         try {
             Desktop.getDesktop().open(file);
             mainView.setStatusMessage("✅ Đã mở file: " + file.getName());
         } catch (IOException e) {
-            mainView.showAlert("Lỗi Mở File", 
-                             "Không tìm thấy chương trình mặc định để mở file này.\n" +
-                             "Vui lòng mở thủ công tại: " + file.getAbsolutePath(), 
-                             IMainView.AlertType.ERROR);
+            mainView.showAlert("Lỗi Mở File",
+                    "Không tìm thấy chương trình mặc định để mở file này.\n" +
+                            "Vui lòng mở thủ công tại: " + file.getAbsolutePath(),
+                    IMainView.AlertType.ERROR);
             e.printStackTrace();
         }
     }
@@ -1032,29 +1032,29 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             try {
                 // Gọi NetworkService để xóa file trên server
                 Response response = fileService.deleteFile(
-                    fileItem.getFileId(), 
-                    fileItem.getFolderId(), 
-                    fileItem.getFileName()
+                        fileItem.getFileId(),
+                        fileItem.getFolderId(),
+                        fileItem.getFileName()
                 );
-                
+
                 if (response != null && "success".equals(response.getStatus())) {
                     mainView.setStatusMessage("Đã xóa file: " + fileItem.getFileName());
-                    mainView.showAlert("Thành công", "File đã được xóa: " + fileItem.getFileName(), 
-                                     IMainView.AlertType.INFORMATION);
-                    
+                    mainView.showAlert("Thành công", "File đã được xóa: " + fileItem.getFileName(),
+                            IMainView.AlertType.INFORMATION);
+
                     // Làm mới danh sách file
                     if (currentFolderId > 0) {
                         loadDirectoryFiles(currentFolderId);
                     }
                 } else {
                     String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
-                    mainView.showAlert("Lỗi", "Không thể xóa file: " + errorMsg, 
-                                     IMainView.AlertType.ERROR);
+                    mainView.showAlert("Lỗi", "Không thể xóa file: " + errorMsg,
+                            IMainView.AlertType.ERROR);
                     mainView.setStatusMessage("Lỗi khi xóa file: " + errorMsg);
                 }
             } catch (Exception e) {
-                mainView.showAlert("Lỗi", "Lỗi khi xóa file: " + e.getMessage(), 
-                                 IMainView.AlertType.ERROR);
+                mainView.showAlert("Lỗi", "Lỗi khi xóa file: " + e.getMessage(),
+                        IMainView.AlertType.ERROR);
                 mainView.setStatusMessage("Lỗi: " + e.getMessage());
             }
         }
@@ -1077,22 +1077,22 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         boolean confirmed = mainView.showConfirmDialog(
                 "Xác nhận xóa thư mục",
                 "Bạn có chắc chắn muốn xóa thư mục này?\n" +
-                "Thư mục sẽ được xóa cùng với tất cả nội dung bên trong (recursive)."
+                        "Thư mục sẽ được xóa cùng với tất cả nội dung bên trong (recursive)."
         );
 
         if (confirmed) {
             try {
                 // Gọi FolderService để xóa thư mục trên server (recursive = true)
                 Response response = folderService.deleteFolder(folderId, true);
-                
+
                 if (response != null && "success".equals(response.getStatus())) {
                     mainView.setStatusMessage("Đã xóa thư mục thành công");
-                    mainView.showAlert("Thành công", "Thư mục đã được xóa", 
-                                     IMainView.AlertType.INFORMATION);
-                    
+                    mainView.showAlert("Thành công", "Thư mục đã được xóa",
+                            IMainView.AlertType.INFORMATION);
+
                     // Làm mới cây thư mục
                     mainView.refreshFolderTree();
-                    
+
                     // Xóa danh sách file hiển thị nếu đang xem thư mục bị xóa
                     if (currentFolderId == folderId) {
                         mainView.clearFileListDisplay();
@@ -1100,20 +1100,20 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                     }
                 } else {
                     String errorMsg = response != null ? response.getMessage() : "Không có phản hồi từ server";
-                    mainView.showAlert("Lỗi", "Không thể xóa thư mục: " + errorMsg, 
-                                     IMainView.AlertType.ERROR);
+                    mainView.showAlert("Lỗi", "Không thể xóa thư mục: " + errorMsg,
+                            IMainView.AlertType.ERROR);
                     mainView.setStatusMessage("Lỗi khi xóa thư mục: " + errorMsg);
                 }
             } catch (Exception e) {
-                mainView.showAlert("Lỗi", "Lỗi khi xóa thư mục: " + e.getMessage(), 
-                                 IMainView.AlertType.ERROR);
+                mainView.showAlert("Lỗi", "Lỗi khi xóa thư mục: " + e.getMessage(),
+                        IMainView.AlertType.ERROR);
                 mainView.setStatusMessage("Lỗi: " + e.getMessage());
             }
         }
     }
 
     // === NOTIFICATION CENTER METHODS ===
-    
+
     /**
      * Khởi tạo Trung tâm thông báo (nút chuông, badge, và popover)
      */
@@ -1122,16 +1122,16 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             System.err.println("Notification UI components not initialized");
             return;
         }
-        
+
         // 1. Tạo Label để làm Badge (số thông báo)
         Label badge = new Label("0");
         badge.setStyle(
-            "-fx-background-color: #dc2626; " +
-            "-fx-text-fill: white; " +
-            "-fx-font-size: 10px; " +
-            "-fx-padding: 2 6; " +
-            "-fx-background-radius: 10; " +
-            "-fx-font-weight: bold;"
+                "-fx-background-color: #dc2626; " +
+                        "-fx-text-fill: white; " +
+                        "-fx-font-size: 10px; " +
+                        "-fx-padding: 2 6; " +
+                        "-fx-background-radius: 10; " +
+                        "-fx-font-weight: bold;"
         );
         badge.setVisible(false); // Chỉ hiển thị khi có thông báo
         badge.setManaged(false); // Không chiếm không gian khi ẩn
@@ -1161,31 +1161,31 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             notificationPopOver.setDetachable(false);
             notificationPopOver.setHeaderAlwaysVisible(true);
             notificationPopOver.setTitle("Thông báo");
-            
+
             // 2. Tạo ListView
             ListView<NotificationItem> notificationList = new ListView<>();
             notificationList.setPrefSize(350, 450); // Kích thước panel
-            
+
             // 3. Gán danh sách thông báo từ Manager
             notificationList.setItems(notificationManager.getNotifications());
-            
+
             // 4. Sử dụng CellFactory tùy chỉnh (NotificationCell)
             notificationList.setCellFactory(lv -> new NotificationCell());
-            
+
             // 5. Placeholder khi không có thông báo
             Label emptyLabel = new Label("Không có thông báo nào");
             emptyLabel.setStyle("-fx-text-fill: #9ca3af; -fx-padding: 20;");
             notificationList.setPlaceholder(emptyLabel);
-            
+
             // 6. Đặt ListView làm nội dung cho PopOver
             notificationPopOver.setContentNode(notificationList);
-            
+
             // 7. Khi PopOver ẩn đi, đánh dấu đã đọc
             notificationPopOver.setOnHidden(e -> {
                 notificationManager.markAllAsRead();
             });
         }
-        
+
         // 8. Hiển thị PopOver bên dưới nút chuông
         notificationPopOver.show(btnNotifications);
     }
@@ -1240,22 +1240,22 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             System.out.println("SỰ KIỆN: Trở lại ONLINE");
             mainView.setConnectionStatus("● Kết nối: Thành công", true);
             mainView.setNetworkStatus("Mạng: Đã kết nối", true);
-            
+
             // --- BỎ COMMENT VÀ SỬA DÒNG NÀY ---
             // Kích hoạt hàng đợi đồng bộ
             if (syncAgent != null) {
-                syncAgent.triggerSyncQueue(); 
+                syncAgent.triggerSyncQueue();
             }
             // ---------------------------------
-            
+
             // Tải lại thư mục hiện tại để lấy dữ liệu mới từ server
-            handleRefresh(); 
-            
+            handleRefresh();
+
         } else {
             System.out.println("SỰ KIỆN: Mất kết nối (OFFLINE)");
             mainView.setConnectionStatus("● Mất kết nối", false);
             mainView.setNetworkStatus("Mạng: Offline", false);
-            
+
             // --- DỪNG ĐỒNG BỘ ---
             // TODO: (Bước 5)
             // syncAgent.stopSyncQueue();
@@ -1271,7 +1271,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             syncAgent.stop();
             System.out.println("Sync agent stopped during cleanup");
         }
-        
+
         // Dừng heartbeat khi đóng ứng dụng
         if (networkService != null) {
             networkService.stopHeartbeat();
