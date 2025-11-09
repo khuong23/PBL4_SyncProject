@@ -166,4 +166,46 @@ public class FolderDAO {
 
         return path.toString();
     }
+    
+    /**
+     * Lấy TẤT CẢ folders mà user có quyền truy cập
+     * Dùng khi client cần toàn bộ folder tree một lần (không lazy loading)
+     * @param userId ID của user
+     * @return Danh sách tất cả folders (bao gồm root và tất cả children)
+     */
+    public List<Folders> getAllFoldersForUser(int userId) throws SQLException {
+        // Query lấy tất cả folders mà user có quyền READ
+        // Sử dụng JOIN với FolderAccessControl hoặc check quyền admin
+        String sql = """
+            SELECT DISTINCT f.*, 
+                   (EXISTS (SELECT 1 FROM Folders fc WHERE fc.ParentFolderID = f.FolderID)) AS hasChildren
+            FROM Folders f
+            LEFT JOIN FolderAccessControl fac ON f.FolderID = fac.FolderID
+            LEFT JOIN Users u ON u.UserID = ?
+            WHERE fac.UserID = ? AND fac.Permission = 'READ'
+               OR u.RoleID = 1
+            ORDER BY f.ParentFolderID ASC, f.FolderName ASC
+        """;
+        
+        List<Folders> list = new ArrayList<>();
+        try (PreparedStatement stm = dbConnection.prepareStatement(sql)) {
+            stm.setInt(1, userId);
+            stm.setInt(2, userId);
+            try (ResultSet rs = stm.executeQuery()) {
+                while (rs.next()) {
+                    Timestamp tsLastModified = rs.getTimestamp("LastModified");
+                    Folders folder = new Folders(
+                            rs.getInt("FolderID"),
+                            rs.getString("FolderName"),
+                            (Integer) rs.getObject("ParentFolderID"),
+                            rs.getTimestamp("CreatedAt").toLocalDateTime(),
+                            tsLastModified != null ? tsLastModified.toLocalDateTime() : null
+                    );
+                    folder.setHasChildren(rs.getBoolean("hasChildren"));
+                    list.add(folder);
+                }
+            }
+        }
+        return list;
+    }
 }
