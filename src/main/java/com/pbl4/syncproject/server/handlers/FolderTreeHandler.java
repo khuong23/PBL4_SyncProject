@@ -50,8 +50,10 @@ public class FolderTreeHandler implements RequestHandler {
 
             List<Folders> children;
             if (parentId == null) {
-                // Lấy các thư mục gốc (ParentFolderID IS NULL)
-                children = folderDAO.getRootFolders();
+                // Khi không có parentId, trả về TOÀN BỘ TREE (tất cả folders user có quyền)
+                // Thay vì chỉ root folders, để client không cần gọi đệ quy nhiều lần
+                System.out.println("[FolderTreeHandler] Client yêu cầu toàn bộ tree, lấy tất cả folders...");
+                children = folderDAO.getAllFoldersForUser(userId);
             } else {
                 // Kiểm tra quyền READ trên folder cha trước
                 // Ngoại lệ: Root folder (ID=1) luôn được phép xem để user có thể điều hướng
