@@ -1501,6 +1501,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     "⚠️ Xung đột: '" + originalName + "' đã đổi thành '" + finalConflictedName + "'. Sẽ tải bản server về.",
                     com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
             );
+
+            // ----- FIX: KÍCH HOẠT DOWN-SYNC NGAY LẬP TỨC -----
+            // Sau khi đổi tên file local, chủ động tải phiên bản đúng từ server về
+            // (thay vì để fileWatcher tạo vòng lặp mới với file conflict).
+            System.out.println("🔥 Kích hoạt Down-Sync ngay lập tức do có Xung đột (Conflict)...");
+            // Chạy down-sync ở thread riêng để không block thread xử lý queue hiện tại
+            new Thread(this::triggerDownSync, "Conflict-Down-Sync-Thread").start();
+            // ---------------------------------------------
+            
         } catch (Exception e) {
             System.err.println("Lỗi xử lý xung đột: " + e.getMessage());
             e.printStackTrace();

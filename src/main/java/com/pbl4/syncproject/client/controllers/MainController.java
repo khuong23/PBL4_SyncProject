@@ -746,13 +746,14 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
 
     @FXML
     private void refresh() {
-        System.out.println("🔄 Refresh button clicked - Resetting folder tree with lazy loading...");
+        System.out.println("🔄 Refresh button clicked - Reloading files for current folder...");
 
-        // Reset folder tree về trạng thái ban đầu (lazy loading)
-        mainView.refreshFolderTree();
+        // FIX: Không reset folder tree để giữ vị trí người dùng đang chọn
+        // mainView.refreshFolderTree(); // <--- VÔ HIỆU HÓA DÒNG NÀY
 
         // Tải lại danh sách tệp cho thư mục đang được chọn (nếu có)
         if (currentFolderId > 0) {
+            System.out.println("   Reloading files for current folderId: " + currentFolderId);
             loadDirectoryFiles(currentFolderId);
         } else {
             mainView.setStatusMessage("Sẵn sàng. Vui lòng chọn một thư mục để xem nội dung.");
