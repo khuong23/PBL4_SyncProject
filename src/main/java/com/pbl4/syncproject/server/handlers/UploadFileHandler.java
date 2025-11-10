@@ -236,7 +236,7 @@ public class UploadFileHandler implements RequestHandler {
                 ChangesDAO.insertFileChange(connection, fileId, "CREATE", newVersion, fileHash, fileSize, folderId, fileName, userId);
 
                 // (Giữ lại lịch sử nếu bạn vẫn muốn)
-                SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPLOAD_FILE, fileId, folderId);
+                SyncHistoryDAO.logAction(connection, userId, SyncHistoryDAO.ACTION_UPLOAD_FILE, fileId, folderId);
                 
                 System.out.println("✅ [UploadHandler] Đã tạo FileID=" + fileId + ", ghi Changes với Version=1, Hash=" + fileHash);
 
@@ -262,7 +262,7 @@ public class UploadFileHandler implements RequestHandler {
                 // Ghi change feed
                 ChangesDAO.insertFileChange(connection, fileId, "UPDATE", newVersion, fileHash, fileSize, folderId, fileName, userId);
 
-                SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_UPDATE_FILE, fileId, folderId);
+                SyncHistoryDAO.logAction(connection, userId, SyncHistoryDAO.ACTION_UPDATE_FILE, fileId, folderId);
                 
                 System.out.println("✅ [UploadHandler] Đã ghi Changes với Version=" + newVersion + ", Hash=" + fileHash);
             }

@@ -102,7 +102,7 @@ public class CreateFolderHandler implements RequestHandler {
             long seq = ChangesDAO.insertFolderChange(
                     conn, newId, "CREATE", folderName, parentId, userId, version);
 
-            SyncHistoryDAO.logAction(userId, SyncHistoryDAO.ACTION_CREATE_FOLDER, null, newId);
+            SyncHistoryDAO.logAction(conn,userId, SyncHistoryDAO.ACTION_CREATE_FOLDER, null, newId);
 
             // 4) Trả về
             JsonObject out = new JsonObject();
