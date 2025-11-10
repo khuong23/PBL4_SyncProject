@@ -255,7 +255,13 @@ public class FileWatcherService {
     }
 
     private void handleFileEvent(WatchEvent.Kind<?> kind, Path filePath) {
-        if (!isRunning.get() || paused.get()) return;
+        if (!isRunning.get()) return;
+        
+        // KIỂM TRA PAUSED FLAG
+        if (paused.get()) {
+            System.out.println("🔇 File event IGNORED (watcher muted): " + kind.name() + " - " + filePath);
+            return;
+        }
 
         // Bỏ qua một số file/dir theo tên và theo glob
         if (shouldIgnore(filePath)) return;

@@ -28,7 +28,10 @@ public class FolderService {
         data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("CREATE_FOLDER", data));
     }
-    /** Đổi tên thư mục */
+
+    /**
+     * Đổi tên thư mục
+     */
     public Response renameFolder(int folderId, String newName) throws Exception {
         if (folderId <= 0) throw new IllegalArgumentException("folderId không hợp lệ");
         if (newName == null || newName.trim().isEmpty()) throw new IllegalArgumentException("newName rỗng");
@@ -40,7 +43,9 @@ public class FolderService {
         return net.sendRequest(new Request("RENAME_FOLDER", data));
     }
 
-    /** Xoá thư mục */
+    /**
+     * Xoá thư mục
+     */
     public Response deleteFolder(int folderId, boolean recursive) throws Exception {
         if (folderId <= 0) throw new IllegalArgumentException("folderId không hợp lệ");
         JsonObject data = new JsonObject();
@@ -50,7 +55,9 @@ public class FolderService {
         return net.sendRequest(new Request("DELETE_FOLDER", data));
     }
 
-    /** Di chuyển thư mục */
+    /**
+     * Di chuyển thư mục
+     */
     public Response moveFolder(int folderId, int newParentId) throws Exception {
         if (folderId <= 0) throw new IllegalArgumentException("folderId không hợp lệ");
         if (newParentId < 0) throw new IllegalArgumentException("newParentId không hợp lệ");
@@ -59,5 +66,20 @@ public class FolderService {
         data.addProperty("newParentId", newParentId);
         data.addProperty("username", net.getCurrentUsername()); // Thêm username
         return net.sendRequest(new Request("MOVE_FOLDER", data));
+    }
+
+// ...
+
+    /**
+     * Đồng bộ cây thư mục từ server - được gọi khi cần re-sync folder structure
+     */
+    public void syncFolderTreeFromServer() throws Exception {
+        JsonObject data = new JsonObject();
+        data.addProperty("username", net.getCurrentUsername());
+        Response response = net.sendRequest(new Request("FOLDER_TREE", data)); // <-- ĐÃ SỬA
+        if (response == null || !"success".equals(response.getStatus())) {
+            throw new Exception("Không thể đồng bộ folder tree: " + (response != null ? response.getMessage() : "null response"));
+        }
+// ...
     }
 }

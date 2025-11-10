@@ -1,6 +1,5 @@
 package com.pbl4.syncproject.client.services;
 
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
@@ -60,20 +59,48 @@ public class LocalDatabaseManager {
     public void initializeDatabase(boolean fresh) {
         try (Connection c = getConnection()) {
             c.setAutoCommit(false);
-            try (Statement st = c.createStatement()) {
-                if (fresh) {
-                    st.executeUpdate("DROP TABLE IF EXISTS Files;");
-                    st.executeUpdate("DROP TABLE IF EXISTS Folders;");
-                    st.executeUpdate("DROP TABLE IF EXISTS SyncQueue;");
-                    st.executeUpdate("DROP TABLE IF EXISTS Settings;");
+            try {
+                try (Statement st = c.createStatement()) {
+                    if (fresh) {
+                        st.executeUpdate("DROP TABLE IF EXISTS Files;");
+                        st.executeUpdate("DROP TABLE IF EXISTS Folders;");
+                        st.executeUpdate("DROP TABLE IF EXISTS SyncQueue;");
+                        st.executeUpdate("DROP TABLE IF EXISTS Settings;");
+                    } else {
+                        // Kiểm tra xem các bảng quan trọng đã tồn tại chưa
+                        if (!tableExists(c, "Folders") || !tableExists(c, "Files") || !tableExists(c, "SyncQueue")) {
+                            System.out.println("⚠️ Phát hiện CSDL thiếu bảng, đang tạo lại schema...");
+                            // Drop tất cả để tạo sạch
+                            st.executeUpdate("DROP TABLE IF EXISTS Files;");
+                            st.executeUpdate("DROP TABLE IF EXISTS Folders;");
+                            st.executeUpdate("DROP TABLE IF EXISTS SyncQueue;");
+                            st.executeUpdate("DROP TABLE IF EXISTS Settings;");
+                        }
+                    }
+                    createSchema(c);
+                    st.execute("PRAGMA user_version = 1;");
                 }
-                createSchema(c);
-                st.execute("PRAGMA user_version = 1;");
+                c.commit();
+                System.out.println("✅ SQLite cache sẵn sàng (schema chuẩn, " + (fresh ? "fresh" : "warm") + ").");
+            } catch (SQLException e) {
+                c.rollback();
+                System.err.println("❌ Khởi tạo CSDL cục bộ lỗi: " + e.getMessage());
+                e.printStackTrace();
+                throw new RuntimeException("Không thể khởi tạo CSDL local", e);
             }
-            c.commit();
-            System.out.println("✅ SQLite cache sẵn sàng (schema chuẩn, " + (fresh ? "fresh" : "warm") + ").");
         } catch (SQLException e) {
-            System.err.println("❌ Khởi tạo CSDL cục bộ lỗi: " + e.getMessage());
+            System.err.println("❌ NGHIÊM TRỌNG: Không thể kết nối CSDL local: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Không thể khởi tạo CSDL local", e);
+        }
+    }
+    
+    /**
+     * Kiểm tra xem một bảng có tồn tại trong CSDL không
+     */
+    private boolean tableExists(Connection c, String tableName) throws SQLException {
+        try (var rs = c.getMetaData().getTables(null, null, tableName, null)) {
+            return rs.next();
         }
     }
 
@@ -131,6 +158,13 @@ public class LocalDatabaseManager {
             st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_serverid    ON Files(ServerFileID);");
             st.execute("CREATE        INDEX IF NOT EXISTS idx_files_folder      ON Files(FolderID);");
             st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_folder_name ON Files(FolderID, FileName);");
+            
+            // GIẢI PHÁP B: LUÔN TẠO LẠI ROOT FOLDER SAU KHI RESET
+            // Đảm bảo root folder (ServerFolderID=1) luôn tồn tại
+            st.execute("""
+                INSERT OR IGNORE INTO Folders (FolderID, ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus)
+                VALUES (1, 1, NULL, 'Root', '', 'SYNCED')
+            """);
         }
     }
     // ===== since_seq (change feed) =====
@@ -200,7 +234,9 @@ public class LocalDatabaseManager {
                                      long fileSize,
                                      String localPath,
                                      String fileHash,
-                                     int serverVersion) {
+                                     int serverVersion) throws SQLException {
+        // Xử lý cả 2 UNIQUE constraints: ServerFileID và LocalPath
+        // Nếu file đã tồn tại (theo LocalPath hoặc ServerFileID), update nó
         final String sql = """
             INSERT INTO Files (ServerFileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, LastKnownVersion, SyncStatus)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'SYNCED')
@@ -213,17 +249,48 @@ public class LocalDatabaseManager {
               LastKnownVersion = excluded.LastKnownVersion,
               SyncStatus       = 'SYNCED'
         """;
-        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, serverFileId);
-            ps.setInt(2, localFolderId);
-            ps.setString(3, fileName);
-            ps.setLong(4, fileSize);
-            ps.setString(5, localPath);
-            ps.setString(6, fileHash);
-            ps.setInt(7, serverVersion);
-            ps.executeUpdate();
+        
+        try (Connection c = getConnection()) {
+            // BƯỚC 1: Xóa conflict trên LocalPath
+            // Xóa bất kỳ file nào khác đang dùng LocalPath này
+            try (PreparedStatement psCheck1 = c.prepareStatement(
+                    "DELETE FROM Files WHERE LocalPath = ? AND (ServerFileID IS NULL OR ServerFileID != ?)")) {
+                psCheck1.setString(1, localPath);
+                psCheck1.setInt(2, serverFileId);
+                int deleted1 = psCheck1.executeUpdate();
+                if (deleted1 > 0) {
+                    System.out.println("🔄 Đã xóa conflict LocalPath tại " + localPath);
+                }
+            }
+            
+            // BƯỚC 2: Xóa conflict trên (FolderID, FileName)
+            // Xóa bất kỳ file nào khác trong cùng thư mục có cùng tên
+            try (PreparedStatement psCheck2 = c.prepareStatement(
+                    "DELETE FROM Files WHERE FolderID = ? AND FileName = ? AND (ServerFileID IS NULL OR ServerFileID != ?)")) {
+                psCheck2.setInt(1, localFolderId);
+                psCheck2.setString(2, fileName);
+                psCheck2.setInt(3, serverFileId);
+                int deleted2 = psCheck2.executeUpdate();
+                if (deleted2 > 0) {
+                    System.out.println("🔄 Đã xóa conflict (FolderID, FileName) cho: " + fileName);
+                }
+            }
+            
+            // BƯỚC 3: Bây giờ INSERT hoặc UPDATE (ON CONFLICT(ServerFileID))
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setInt(1, serverFileId);
+                ps.setInt(2, localFolderId);
+                ps.setString(3, fileName);
+                ps.setLong(4, fileSize);
+                ps.setString(5, localPath);
+                ps.setString(6, fileHash);
+                ps.setInt(7, serverVersion);
+                ps.executeUpdate();
+            }
         } catch (SQLException e) {
             System.err.println("❌ upsertDownloadedFile lỗi: " + e.getMessage());
+            e.printStackTrace();
+            throw e; // Ném lại exception để caller biết lỗi xảy ra
         }
     }
     public void upsertDownloadedFile(int serverFileId,
@@ -231,9 +298,45 @@ public class LocalDatabaseManager {
                                      String fileName,
                                      long fileSize,
                                      String localPath,
-                                     String fileHash) {
+                                     String fileHash) throws SQLException {
         upsertDownloadedFile(serverFileId, localFolderId, fileName, fileSize, localPath, fileHash, 0);
     }
+    
+    // ===== Query files from local DB =====
+    /** Lấy danh sách files trong một folder từ local DB (để hiển thị UI) */
+    public java.util.List<java.util.Map<String, Object>> getFilesInFolder(int localFolderId) {
+        final String sql = """
+            SELECT FileID, ServerFileID, FolderID, FileName, FileSize, LocalPath, 
+                   LastKnownHash, LastKnownVersion, SyncStatus
+            FROM Files
+            WHERE FolderID = ?
+            ORDER BY FileName
+        """;
+        
+        java.util.List<java.util.Map<String, Object>> results = new java.util.ArrayList<>();
+        try (Connection c = getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, localFolderId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    java.util.Map<String, Object> row = new java.util.HashMap<>();
+                    row.put("fileId", rs.getInt("FileID"));
+                    row.put("serverFileId", rs.getObject("ServerFileID")); // Có thể null
+                    row.put("folderId", rs.getInt("FolderID"));
+                    row.put("fileName", rs.getString("FileName"));
+                    row.put("fileSize", rs.getLong("FileSize"));
+                    row.put("localPath", rs.getString("LocalPath"));
+                    row.put("hash", rs.getString("LastKnownHash"));
+                    row.put("version", rs.getInt("LastKnownVersion"));
+                    row.put("syncStatus", rs.getString("SyncStatus"));
+                    results.add(row);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ getFilesInFolder lỗi: " + e.getMessage());
+        }
+        return results;
+    }
+    
     // ===== Tiện ích thêm =====
     /** Dựng đường dẫn tương đối từ FolderID về gốc. */
     public String buildRelativePath(int folderId) {

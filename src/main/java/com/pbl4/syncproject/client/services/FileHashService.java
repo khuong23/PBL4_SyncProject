@@ -25,7 +25,7 @@ public class FileHashService {
     private final Map<String, Long> lastModifiedCache = new ConcurrentHashMap<>();
     
     /**
-     * Tính MD5 hash của file
+     * Tính SHA-256 hash của file (thống nhất với server)
      */
     public String calculateFileHash(File file) throws Exception {
         if (!file.exists() || !file.isFile()) {
@@ -42,8 +42,8 @@ public class FileHashService {
             return fileHashCache.get(filePath);
         }
         
-        // Tính hash mới
-        String hash = computeMD5Hash(file);
+        // Tính hash mới (SHA-256)
+        String hash = computeSHA256Hash(file);
         
         // Update cache
         fileHashCache.put(filePath, hash);
@@ -53,10 +53,12 @@ public class FileHashService {
     }
     
     /**
-     * Compute MD5 hash của file
+     * Compute SHA-256 hash của file (thống nhất với server)
+     * QUAN TRỌNG: Phải dùng SHA-256 giống server để tránh conflict!
      */
-    private String computeMD5Hash(File file) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("MD5");
+    private String computeSHA256Hash(File file) throws Exception {
+        // ĐỔI TỪ MD5 SANG SHA-256 để khớp với server
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
         
         try (FileInputStream fis = new FileInputStream(file);
              BufferedInputStream bis = new BufferedInputStream(fis)) {

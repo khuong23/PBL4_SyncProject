@@ -117,8 +117,10 @@ public class UploadManager {
             }
 
             // CONFLICT (server có thể trả status=error/message=CONFLICT hoặc data.conflict=true)
+            // CONFLICT (server có thể trả status="conflict" HOẶC status="error"/message="CONFLICT")
             boolean isConflict =
-                    "error".equalsIgnoreCase(res.getStatus()) && "CONFLICT".equalsIgnoreCase(String.valueOf(res.getMessage()))
+                    "conflict".equalsIgnoreCase(res.getStatus()) // Kiểm tra status="conflict" trực tiếp
+                            || ("error".equalsIgnoreCase(res.getStatus()) && "CONFLICT".equalsIgnoreCase(String.valueOf(res.getMessage())))
                             || (res.getData() != null && res.getData().isJsonObject()
                             && res.getData().getAsJsonObject().has("conflict")
                             && res.getData().getAsJsonObject().get("conflict").getAsBoolean());
@@ -159,15 +161,16 @@ public class UploadManager {
         String successMsg = response.getMessage() != null ? response.getMessage() : "File đã được tải lên thành công!";
         String folderDisplayName = resolveFolderNameFromServerId(currentDirectory);
 
+        // Khai báo biến ngoài try-catch để có thể truy cập trong catch
+        String newServerHash = null;
+        Integer newServerVersion = null;
+        Integer serverFolderId = tryParseInt(currentDirectory);
+        Integer serverFileId = null;
+
         // Cập nhật cache nếu đã có record (chỉ UPDATE, không cố INSERT vì thiếu LocalPath)
         try {
             JsonObject data = (response.getData() != null && response.getData().isJsonObject())
                     ? response.getData().getAsJsonObject() : null;
-
-            String newServerHash = null;
-            Integer newServerVersion = null;
-            Integer serverFolderId = tryParseInt(currentDirectory);
-            Integer serverFileId = null;
 
             if (data != null) {
                 if (data.has("hash") && !data.get("hash").isJsonNull()) {
@@ -189,8 +192,25 @@ public class UploadManager {
             if (serverFolderId != null) {
                 updateLocalCacheAfterUpload(serverFolderId, file.getName(), newServerHash, newServerVersion, serverFileId);
             }
-        } catch (Exception ignore) {
-            // không để lỗi nhẹ này phá flow UI
+        } catch (Exception e) {
+            // Lỗi này rất quan trọng - cache local không được cập nhật sẽ gây xung đột lần upload sau
+            System.err.println("⚠️ NGHIÊM TRỌNG: Không thể cập nhật cache local sau khi upload thành công!");
+            System.err.println("   File: " + file.getName());
+            System.err.println("   ServerFolderId: " + serverFolderId);
+            System.err.println("   NewVersion: " + newServerVersion);
+            System.err.println("   NewHash: " + newServerHash);
+            e.printStackTrace();
+            
+            // Thông báo cho user về vấn đề này
+            Platform.runLater(() -> 
+                mainView.showAlert(
+                    "Cảnh báo Cache", 
+                    "Upload thành công nhưng không thể cập nhật cache local.\n" +
+                    "Lần upload tiếp theo có thể gặp lỗi xung đột.\n" +
+                    "Chi tiết lỗi: " + e.getMessage(), 
+                    IMainView.AlertType.WARNING
+                )
+            );
         }
 
         mainView.setStatusMessage("Tải lên thành công: " + file.getName());

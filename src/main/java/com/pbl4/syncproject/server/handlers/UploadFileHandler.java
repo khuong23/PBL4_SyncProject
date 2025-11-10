@@ -117,12 +117,29 @@ public class UploadFileHandler implements RequestHandler {
             }
 
             // Nếu có baseVersion nhưng KHÔNG khớp -> conflict
-            if (existingFileId != null && baseVersion != null && !baseVersion.equals(currentVersion)) {
+            // 6. KIỂM TRA PHIÊN BẢN (OPTIMISTIC LOCKING)
+            // ƯU TIÊN HASH MATCH: Nếu client có hash đúng, có nghĩa là client đã bắt đầu từ phiên bản đúng,
+            // ngay cả khi số 'version' trong cache của client bị cũ (ví dụ: 0).
+            boolean hashMatch = (clientBaseHash != null && currentHash != null && clientBaseHash.equals(currentHash));
+            boolean versionMatch = (baseVersion != null && baseVersion.equals(currentVersion));
+            
+            if (existingFileId != null && !hashMatch && !versionMatch) {
+                // CONFLICT THỰC SỰ: Cả hash và version đều không khớp
+                System.out.println("🔥 CONFLICT: Version/Hash mismatch for " + fileName
+                        + ". Client(v" + baseVersion + ", h:" + (clientBaseHash != null ? clientBaseHash.substring(0, 6) : "null")
+                        + ") Server(v" + currentVersion + ", h:" + (currentHash != null ? currentHash.substring(0, 6) : "null") + ")");
+                
                 JsonObject body = new JsonObject();
                 body.addProperty("currentVersion", currentVersion);
                 if (currentHash != null) body.addProperty("currentHash", currentHash);
                 connection.rollback();
                 return new Response("conflict", "Conflict occur", body);
+            }
+            
+            // Cho phép upload nếu hashMatch HOẶC versionMatch
+            if (existingFileId != null && !versionMatch && hashMatch) {
+                System.out.println("ℹ️ [UploadHandler] Cho phép upload (Hash Match) dù version bị lệch: " + fileName
+                        + " (ClientVer: " + baseVersion + ", ServerVer: " + currentVersion + ")");
             }
 
             // VALIDATION: Kiểm tra tính toàn vẹn dữ liệu DB vs File vật lý
@@ -159,17 +176,6 @@ public class UploadFileHandler implements RequestHandler {
                 } catch (Exception e) {
                     System.err.println("⚠️ Không thể validate file integrity: " + e.getMessage());
                 }
-            }
-            
-            // (Tuỳ chọn) Cảnh báo sớm bằng hash: nếu clientBaseHash khác serverHash => cũng coi là conflict
-            if (existingFileId != null && clientBaseHash != null && currentHash != null
-                    && !clientBaseHash.equals(currentHash)) {
-                JsonObject body = new JsonObject();
-                body.addProperty("currentVersion", currentVersion);
-                body.addProperty("currentHash", currentHash);
-                body.addProperty("reason", "Hash mismatch (another client updated)");
-                connection.rollback();
-                return new Response("conflict", "conflict occur", body);
             }
 
             // ========== Ghi nội dung vật lý ==========

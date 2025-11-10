@@ -1,6 +1,7 @@
 package com.pbl4.syncproject.client.services;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -79,6 +80,10 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     public void setEventListener(SyncEventListener listener) {
         this.eventListener = listener;
     }
+    
+    public LocalDatabaseManager getLocalDbManager() {
+        return localDbManager;
+    }
 
     /** Cho phép bọc một khối ghi/đổi tên file mà không cho Watcher bắn sự kiện. */
     public void runWatcherMuted(Runnable r) {
@@ -98,7 +103,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         File dir = syncDirectory.toFile();
         if (!dir.exists()) dir.mkdirs();
 
-        this.downloadService = new DownloadService(networkService, localDbManager, syncDirectoryPath);
+        // Tạo FolderService wrapper cho DownloadService
+        FolderService folderServiceWrapper = new FolderService(networkService);
+        this.downloadService = new DownloadService(networkService, localDbManager, syncDirectoryPath, fileWatcher, folderServiceWrapper);
+        
+        // Đảm bảo root folder tồn tại trong local DB (với FolderID=1)
+        ensureRootFolderExists();
 
         // MIRROR lần đầu: nếu chưa từng đồng bộ (since_seq == 0)
         long sinceSeq = getSinceSeqCompat();
@@ -261,15 +271,32 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 String lastHash = null;
                 String oldStatus = null;
                 Integer fileId = null;
+                Integer serverFileId = null;
+                Integer lastVersion = null; // THÊM: Lưu LastKnownVersion
 
+                System.out.println("🔍 [DEBUG] Tìm file trong DB với LocalPath: '" + sqlPath + "'");
+                
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT FileID, LastKnownHash, SyncStatus FROM Files WHERE LocalPath=?")) {
+                        "SELECT FileID, ServerFileID, LastKnownHash, LastKnownVersion, SyncStatus FROM Files WHERE LocalPath=?")) {
                     ps.setString(1, sqlPath);
                     ResultSet rs = ps.executeQuery();
                     if (rs.next()) {
                         fileId = rs.getInt("FileID");
+                        
+                        // Đọc ServerFileID an toàn (xử lý NULL)
+                        int tempServerFileId = rs.getInt("ServerFileID");
+                        if (rs.wasNull()) {
+                            serverFileId = null;
+                        } else {
+                            serverFileId = tempServerFileId;
+                        }
+                        
                         lastHash = rs.getString("LastKnownHash");
+                        lastVersion = rs.getObject("LastKnownVersion", Integer.class); // THÊM: Đọc version
                         oldStatus = rs.getString("SyncStatus");
+                        System.out.println("✅ [DEBUG] File tìm thấy: FileID=" + fileId + ", ServerFileID=" + serverFileId + ", lastHash=" + lastHash + ", lastVersion=" + lastVersion);
+                    } else {
+                        System.out.println("❌ [DEBUG] File KHÔNG tìm thấy trong DB!");
                     }
                 }
 
@@ -286,8 +313,8 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
                 try (PreparedStatement ps = conn.prepareStatement(
                         "INSERT OR REPLACE INTO Files " +
-                                "(FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, SyncStatus) " +
-                                "VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+                                "(FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, LastKnownVersion, SyncStatus) " +
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                     if (fileId != null) ps.setInt(1, fileId);
                     else ps.setNull(1, java.sql.Types.INTEGER);
                     ps.setInt(2, folderId);
@@ -295,7 +322,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     ps.setLong(4, file.length());
                     ps.setString(5, sqlPath);
                     ps.setString(6, lastHash); // giữ baseline của server để OCC
-                    ps.setString(7, newStatus);
+                    
+                    // THÊM: Giữ nguyên LastKnownVersion (không reset về 0)
+                    if (lastVersion != null) {
+                        ps.setInt(7, lastVersion);
+                    } else {
+                        ps.setInt(7, 0); // Default về 0 cho file mới
+                    }
+                    
+                    ps.setString(8, newStatus); // SyncStatus bây giờ là tham số 8
                     ps.executeUpdate();
                 }
 
@@ -529,6 +564,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             return true;
         }
         int folderId = 1;
+        Integer baseVersion = null;
         String lastKnownHash = null;
         try (Connection conn = localDbManager.getConnection()) {
             Path filePath = Paths.get(task.localPath);
@@ -550,16 +586,80 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     }
                 }
             }
-            try (PreparedStatement ps = conn.prepareStatement("SELECT LastKnownHash FROM Files WHERE LocalPath=?")) {
+            System.out.println("🔍 [UPLOAD DEBUG] Tìm baseVersion và hash cho: '" + task.localPath + "'");
+            try (PreparedStatement ps = conn.prepareStatement("SELECT ServerFileID, LastKnownVersion, LastKnownHash FROM Files WHERE LocalPath=?")) {
                 ps.setString(1, task.localPath);
                 ResultSet rs = ps.executeQuery();
-                if (rs.next()) lastKnownHash = rs.getString("LastKnownHash");
+                if (rs.next()) {
+                    Integer serverFileId = null;
+                    
+                    // Đọc ServerFileID an toàn
+                    try {
+                        Object srvIdObj = rs.getObject("ServerFileID");
+                        if (srvIdObj != null) {
+                            if (srvIdObj instanceof Integer) {
+                                serverFileId = (Integer) srvIdObj;
+                            } else {
+                                serverFileId = Integer.parseInt(srvIdObj.toString());
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.err.println("⚠️ Lỗi đọc ServerFileID: " + e.getMessage());
+                    }
+                    
+                    // Đọc LastKnownVersion an toàn
+                    try {
+                        Object versionObj = rs.getObject("LastKnownVersion");
+                        if (versionObj != null) {
+                            if (versionObj instanceof Integer) {
+                                baseVersion = (Integer) versionObj;
+                            } else if (versionObj instanceof Long) {
+                                baseVersion = ((Long) versionObj).intValue();
+                            } else {
+                                String versionStr = versionObj.toString().trim();
+                                if (!versionStr.isEmpty() && !versionStr.equalsIgnoreCase("null")) {
+                                    baseVersion = Integer.parseInt(versionStr);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        System.err.println("⚠️ Lỗi đọc LastKnownVersion: " + e.getMessage() + " - Đặt baseVersion = null");
+                        baseVersion = null;
+                    }
+                    
+                    // Lấy hash
+                    lastKnownHash = rs.getString("LastKnownHash");
+                    
+                    System.out.println("✅ [UPLOAD DEBUG] ServerFileID: " + serverFileId + ", BaseVersion: " + baseVersion + ", Hash: " + (lastKnownHash != null ? lastKnownHash.substring(0, Math.min(16, lastKnownHash.length())) + "..." : "null"));
+                    
+                    // QUAN TRỌNG: Nếu có ServerFileID nhưng version=0/null, đặt lại version=1 (sử dụng hash để verify)
+                    if (serverFileId != null && serverFileId > 0 && (baseVersion == null || baseVersion == 0)) {
+                        System.err.println("⚠️ [UPLOAD] File có ServerFileID=" + serverFileId + " nhưng version=" + baseVersion + ". Đặt lại baseVersion=1 (dựa vào hash).");
+                        baseVersion = 1;
+                    }
+                } else {
+                    System.out.println("❌ [UPLOAD DEBUG] Không tìm thấy file trong DB - đây là file mới!");
+                }
+            } catch (Exception e) {
+                System.err.println("⚠️ Lỗi khi tìm file trong DB: " + e.getMessage());
+                e.printStackTrace();
             }
         }
 
-        Response response = networkService.uploadFile(fileToUpload, folderId, lastKnownHash);
+        System.out.println("📤 [UPLOAD] File: " + fileToUpload.getName() + ", FolderId: " + folderId + ", BaseVersion: " + baseVersion);
+        
+        // Gọi uploadFile với baseVersion (int) thay vì hash (string)
+        Response response;
+        if (baseVersion != null && baseVersion > 0) {
+            response = networkService.uploadFile(fileToUpload, folderId, lastKnownHash, baseVersion);
+        } else {
+            // File mới, không có baseVersion
+            response = networkService.uploadFile(fileToUpload, folderId);
+        }
 
-        if ("error".equals(response.getStatus()) && "CONFLICT".equals(response.getMessage())) {
+        // Xử lý CONFLICT (status="conflict" HOẶC status="error" + message="CONFLICT")
+        if ("conflict".equalsIgnoreCase(response.getStatus()) 
+            || ("error".equals(response.getStatus()) && "CONFLICT".equals(response.getMessage()))) {
             System.err.println("🔥 CONFLICT: " + task.localPath);
             handleConflict(task, fileToUpload);
             return true;
@@ -656,6 +756,230 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             }
         }
     }
+    
+    // ========== Folder Tree Sync ==========
+    
+    /** Đảm bảo root folder (FolderID=1, ServerFolderID=1) tồn tại trong local DB */
+    private void ensureRootFolderExists() {
+        try (Connection conn = localDbManager.getConnection()) {
+            // Kiểm tra xem root folder đã tồn tại chưa
+            try (PreparedStatement ps = conn.prepareStatement("SELECT FolderID FROM Folders WHERE FolderID = 1")) {
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    // Root folder đã tồn tại
+                    return;
+                }
+            }
+            
+            // Tạo root folder với FolderID=1 và ServerFolderID=1
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO Folders (FolderID, ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) " +
+                    "VALUES (1, 1, NULL, 'Root', '', 'SYNCED')")) {
+                ps.executeUpdate();
+                System.out.println("✅ Đã tạo root folder trong local DB (FolderID=1, ServerFolderID=1)");
+            }
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi tạo root folder: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /** 
+     * Tải toàn bộ folder tree từ server và lưu vào local DB
+     * Method này đảm bảo client biết tất cả folders trước khi xử lý file changes
+     */
+    private void syncFolderTreeFromServer() {
+        System.out.println("📁 Đang đồng bộ cây thư mục từ server...");
+        try {
+            java.util.Set<Integer> processedFolders = new java.util.HashSet<>();
+            processedFolders.add(1); // Root folder (ID=1) đã tồn tại
+            
+            // Tải đệ quy từ root
+            syncFolderTreeRecursive(null, processedFolders);
+            
+            System.out.println("✅ Đã đồng bộ " + processedFolders.size() + " thư mục từ server");
+            
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi đồng bộ folder tree: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Tải folder tree đệ quy từ server
+     * @param parentId null để lấy root folders, hoặc ID của parent folder
+     * @param processedFolders Set để track folders đã xử lý
+     */
+    private void syncFolderTreeRecursive(Integer parentId, java.util.Set<Integer> processedFolders) {
+        try {
+            // Gọi API FOLDER_TREE để lấy children của parentId
+            JsonObject data = new JsonObject();
+            if (parentId != null) {
+                data.addProperty("parentId", parentId);
+            }
+            // Đính kèm username để server có thể xác định userId/permissions
+            String uname = networkService.getCurrentUsername();
+            if (uname != null && !uname.isBlank()) data.addProperty("username", uname);
+            
+            Response response = networkService.sendRequest(new Request("FOLDER_TREE", data));
+            
+            if (!"success".equals(response.getStatus())) {
+                System.err.println("❌ Lỗi tải folder tree (parentId=" + parentId + "): " + response.getMessage());
+                return;
+            }
+            
+            // Parse danh sách folders - response.getData() trả về JsonArray trực tiếp
+            JsonArray folders = asArr(response.getData());
+            if (folders == null || folders.size() == 0) {
+                return; // Không có children
+            }
+            
+            // Xử lý từng folder
+            for (JsonElement el : folders) {
+                JsonObject folder = asObj(el);
+                if (folder == null) continue;
+                
+                Integer folderId = jInt(folder, "folderId", "FolderID");
+                Integer serverParentId = jInt(folder, "parentFolderId", "ParentFolderID");
+                String folderName = jStr(folder, "folderName", "FolderName", "name");
+                Boolean hasChildren = folder.has("hasChildren") ? folder.get("hasChildren").getAsBoolean() : false;
+                
+                if (folderId == null || folderName == null) {
+                    System.err.println("⚠️ Folder thiếu thông tin: " + folder);
+                    continue;
+                }
+                
+                // Root folder fix: nếu serverParentId == folderId (tự tham chiếu) hoặc folderId=1, đặt parent = NULL
+                if (folderId == 1 || (serverParentId != null && serverParentId.equals(folderId))) {
+                    serverParentId = null;
+                    System.out.println("🔸 Folder '" + folderName + "' là ROOT, đặt parentId = NULL");
+                }
+                
+                // Bỏ qua nếu đã xử lý
+                if (processedFolders.contains(folderId)) {
+                    continue;
+                }
+                
+                // Lưu folder vào local DB
+                System.out.println("📂 Đang xử lý folder: " + folderName + " (ID=" + folderId + ", Parent=" + serverParentId + ", hasChildren=" + hasChildren + ")");
+                boolean success = saveFolderToLocalDB(folderId, serverParentId, folderName);
+                if (success) {
+                    processedFolders.add(folderId);
+                    System.out.println("✅ Đã lưu folder: " + folderName + " (ID=" + folderId + ")");
+                    
+                    // Nếu folder này có children HOẶC là root folder (ID=1), tải đệ quy
+                    // Root folder luôn cần check children ngay cả khi hasChildren=false 
+                    // vì có thể DB structure có vấn đề
+                    if (hasChildren || folderId == 1) {
+                        System.out.println("🔄 Folder '" + folderName + "' (hasChildren=" + hasChildren + "), gọi đệ quy...");
+                        syncFolderTreeRecursive(folderId, processedFolders);
+                    } else {
+                        System.out.println("📭 Folder '" + folderName + "' không có children, bỏ qua đệ quy");
+                    }
+                } else {
+                    System.err.println("❌ Lưu folder '" + folderName + "' thất bại");
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi đồng bộ folder tree recursive (parentId=" + parentId + "): " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Lưu một folder vào local DB
+     * @return true nếu thành công, false nếu thất bại
+     */
+    private boolean saveFolderToLocalDB(int serverFolderId, Integer serverParentId, String folderName) {
+        try (Connection conn = localDbManager.getConnection()) {
+            // Tìm local FolderID của parent
+            Integer localParentId = null;
+            if (serverParentId != null) {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "SELECT FolderID FROM Folders WHERE ServerFolderID = ?")) {
+                    ps.setInt(1, serverParentId);
+                    ResultSet rs = ps.executeQuery();
+                    if (rs.next()) {
+                        localParentId = rs.getInt("FolderID");
+                    } else {
+                        // Parent chưa tồn tại
+                        return false;
+                    }
+                }
+            }
+            
+            // Build relative path
+            String relativePath = buildRelativePathForFolder(serverFolderId, folderName, localParentId, conn);
+            
+            // Insert hoặc update folder
+            String sql = """
+                INSERT INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus)
+                VALUES (?, ?, ?, ?, 'SYNCED')
+                ON CONFLICT(ServerFolderID) DO UPDATE SET
+                    ParentFolderID = excluded.ParentFolderID,
+                    FolderName = excluded.FolderName,
+                    LocalPath = excluded.LocalPath,
+                    SyncStatus = 'SYNCED'
+            """;
+            
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setInt(1, serverFolderId);
+                if (localParentId != null) {
+                    ps.setInt(2, localParentId);
+                } else {
+                    ps.setNull(2, java.sql.Types.INTEGER);
+                }
+                ps.setString(3, folderName);
+                ps.setString(4, relativePath);
+                ps.executeUpdate();
+            }
+            
+            // FIX RACE CONDITION: Commit ngay để đảm bảo dữ liệu visible cho query tiếp theo
+            if (!conn.getAutoCommit()) {
+                conn.commit();
+            }
+            
+            // Tạo thư mục trên filesystem
+            if (!relativePath.isEmpty()) {
+                Path folderPath = syncDirectory.resolve(relativePath);
+                Files.createDirectories(folderPath);
+            }
+            
+            return true;
+            
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi lưu folder '" + folderName + "': " + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Build relative path cho folder từ root
+     */
+    private String buildRelativePathForFolder(int serverFolderId, String folderName, Integer localParentId, Connection conn) throws SQLException {
+        if (serverFolderId == 1 || localParentId == null) {
+            // Root folder
+            return "";
+        }
+        
+        // Lấy path của parent
+        String parentPath = "";
+        try (PreparedStatement ps = conn.prepareStatement("SELECT LocalPath FROM Folders WHERE FolderID = ?")) {
+            ps.setInt(1, localParentId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                parentPath = rs.getString("LocalPath");
+            }
+        }
+        
+        // Nối path
+        if (parentPath == null || parentPath.isEmpty()) {
+            return folderName;
+        } else {
+            return parentPath + "/" + folderName;
+        }
+    }
 
     // ========== Down-sync (SEQ) ==========
     private void triggerDownSync() {
@@ -663,6 +987,10 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         suppressWatcherEvents.set(true);
         try {
             long sinceSeq = getSinceSeqCompat();
+            
+            // QUAN TRỌNG: Tải toàn bộ folder tree từ server TRƯỚC
+            // để đảm bảo client biết tất cả các folder trước khi xử lý file changes
+            syncFolderTreeFromServer();
 
             // Gọi API Change Feed theo seq
             JsonObject data = new JsonObject();
@@ -678,37 +1006,175 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             JsonArray changes = asArr(responseData.get("changes"));
             if (changes != null) {
                 System.out.println("🔽 Nhận " + changes.size() + " thay đổi từ server.");
+                
+                // Phân loại changes: folders trước, files sau để tránh lỗi foreign key
+                java.util.List<JsonObject> folderChanges = new java.util.ArrayList<>();
+                java.util.List<JsonObject> fileChanges = new java.util.ArrayList<>();
+                
                 for (JsonElement change : changes) {
                     JsonObject obj = asObj(change);
                     if (obj == null) continue;
                     String type = obj.has("type") ? obj.get("type").getAsString() : "";
-                    JsonObject payload = asObj(obj.get("data"));
-                    if (payload == null) continue;
-
-                    switch (type) {
-                        case "FILE_MODIFIED":
-                        case "FILE_CREATED":
-                        case "FILE_UPDATE":
-                        case "FILE_CREATE":
-                            handleServerFileUpdate(payload);
-                            break;
-                        case "FILE_DELETED":
-                        case "FILE_DELETE":
-                            handleServerFileDelete(payload);
-                            break;
-                        case "FOLDER_MODIFIED":
-                        case "FOLDER_CREATED":
-                        case "FOLDER_UPDATE":
-                        case "FOLDER_CREATE":
-                            handleServerFolderUpdate(payload);
-                            break;
-                        case "FOLDER_DELETED":
-                        case "FOLDER_DELETE":
-                            handleServerFolderDelete(payload);
-                            break;
-                        default:
-                            System.out.println("⚠️ Unknown change type: " + type);
+                    
+                    if (type.startsWith("FOLDER_")) {
+                        folderChanges.add(obj);
+                    } else {
+                        fileChanges.add(obj);
                     }
+                }
+                
+                // Xử lý folder changes trước - lặp nhiều lần để đảm bảo parent được tạo trước child
+                java.util.Set<Integer> processedFolders = new java.util.HashSet<>();
+                int maxRetries = Math.max(folderChanges.size() * 2, 10); // Tăng số lần retry
+                int retryCount = 0;
+                
+                System.out.println("📁 Bắt đầu xử lý " + folderChanges.size() + " folder changes...");
+                
+                while (!folderChanges.isEmpty() && retryCount < maxRetries) {
+                    java.util.List<JsonObject> remainingFolders = new java.util.ArrayList<>();
+                    int processedThisRound = 0;
+                    
+                    System.out.println("🔄 Round " + (retryCount + 1) + ": Đang xử lý " + folderChanges.size() + " folders...");
+                    
+                    for (JsonObject obj : folderChanges) {
+                        try {
+                            String type = obj.get("type").getAsString();
+                            JsonObject payload = asObj(obj.get("data"));
+                            if (payload == null) continue;
+
+                            Integer folderId = jInt(payload, "FolderID", "folderId", "folderID");
+                            Integer parentId = jInt(payload, "ParentFolderID", "parentFolderId", "parentID");
+                            String folderName = jStr(payload, "Name", "folderName", "FolderName", "name");
+
+                            if (folderId != null && processedFolders.contains(folderId)) {
+                                // Folder này đã được xử lý, bỏ qua
+                                continue;
+                            }
+
+                            // Debug log
+                            System.out.println("  📂 Đang xử lý: FolderID=" + folderId + ", Name=" + folderName + 
+                                             ", ParentID=" + parentId);
+
+                            boolean success = false;
+                            switch (type) {
+                                case "FOLDER_MODIFIED":
+                                case "FOLDER_CREATED":
+                                case "FOLDER_UPDATE":
+                                case "FOLDER_CREATE":
+                                    success = handleServerFolderUpdate(payload);
+                                    break;
+                                case "FOLDER_DELETED":
+                                case "FOLDER_DELETE":
+                                    handleServerFolderDelete(payload);
+                                    success = true; // Delete luôn thành công
+                                    break;
+                            }
+
+                            if (success) {
+                                if (folderId != null) processedFolders.add(folderId);
+                                processedThisRound++;
+                                System.out.println("    ✓ Thành công!");
+                            } else {
+                                // Folder chưa xử lý được (có thể parent chưa tồn tại), thêm vào danh sách chờ
+                                remainingFolders.add(obj);
+                                System.out.println("    ⏳ Tạm hoãn (sẽ thử lại)");
+                            }
+                        } catch (Exception e) {
+                            // Log but keep going; add to remaining for retry attempts
+                            System.err.println("Lỗi xử lý folder change " + obj + ": " + e.getMessage());
+                            e.printStackTrace();
+                            remainingFolders.add(obj);
+                        }
+                    }
+                    
+                    folderChanges = remainingFolders;
+                    retryCount++;
+                    
+                    System.out.println("  ✅ Round " + retryCount + ": Đã xử lý " + processedThisRound + " folders, còn lại " + folderChanges.size());
+                    
+                    // Nếu không có tiến triển trong round này, thoát để tránh vòng lặp vô hạn
+                    if (processedThisRound == 0 && !folderChanges.isEmpty()) {
+                        System.err.println("⚠️ Không thể xử lý " + folderChanges.size() + " folder(s) sau " + retryCount + " lần thử");
+                        // In ra chi tiết các folders không xử lý được
+                        for (JsonObject obj : folderChanges) {
+                            JsonObject payload = asObj(obj.get("data"));
+                            if (payload != null) {
+                                Integer fid = jInt(payload, "FolderID", "folderId", "folderID");
+                                Integer pid = jInt(payload, "ParentFolderID", "parentFolderId", "parentID");
+                                String fname = jStr(payload, "Name", "folderName", "FolderName", "name");
+                                System.err.println("  ❌ FolderID=" + fid + ", Name=" + fname + ", ParentID=" + pid);
+                            }
+                        }
+                        break;
+                    }
+                }
+                
+                System.out.println("✅ Hoàn thành xử lý folders. Đã xử lý: " + processedFolders.size() + " folders");
+                
+                // FIX RACE CONDITION: Sử dụng CountDownLatch để đợi tất cả downloads hoàn thành
+                final java.util.concurrent.CountDownLatch downloadLatch = new java.util.concurrent.CountDownLatch(fileChanges.size());
+                
+                // Sau đó xử lý file changes
+                for (JsonObject obj : fileChanges) {
+                    try {
+                        String type = obj.get("type").getAsString();
+                        JsonObject payload = asObj(obj.get("data"));
+                        if (payload == null) {
+                            downloadLatch.countDown(); // Đếm xuống ngay cả khi skip
+                            continue;
+                        }
+                        
+                        switch (type) {
+                            case "FILE_MODIFIED":
+                            case "FILE_CREATED":
+                            case "FILE_UPDATE":
+                            case "FILE_CREATE":
+                                try {
+                                    handleServerFileUpdate(payload);
+                                } catch (Exception e) {
+                                    // handleServerFileUpdate should catch its own exceptions, but
+                                    // guard here as well to ensure we never abort the whole down-sync
+                                    System.err.println("Lỗi khi xử lý FILE change payload=" + payload + ": " + e.getMessage());
+                                    e.printStackTrace();
+                                } finally {
+                                    downloadLatch.countDown(); // Đếm xuống sau khi xử lý xong
+                                }
+                                break;
+                            case "FILE_DELETED":
+                            case "FILE_DELETE":
+                                try {
+                                    handleServerFileDelete(payload);
+                                } catch (Exception e) {
+                                    System.err.println("Lỗi khi xử lý FILE_DELETE payload=" + payload + ": " + e.getMessage());
+                                    e.printStackTrace();
+                                } finally {
+                                    downloadLatch.countDown(); // Đếm xuống sau khi xử lý xong
+                                }
+                                break;
+                            default:
+                                downloadLatch.countDown(); // Đếm xuống cho các case không xử lý
+                                break;
+                        }
+                    } catch (Exception e) {
+                        // Log per-change error and continue with next change
+                        System.err.println("Lỗi xử lý change " + obj + ": " + e.getMessage());
+                        e.printStackTrace();
+                        downloadLatch.countDown(); // Đếm xuống ngay cả khi có lỗi
+                    }
+                }
+                
+                // ĐỢI tất cả downloads hoàn thành (timeout 60s)
+                try {
+                    System.out.println("⏳ Đang đợi " + fileChanges.size() + " file downloads hoàn thành...");
+                    boolean completed = downloadLatch.await(60, java.util.concurrent.TimeUnit.SECONDS);
+                    if (!completed) {
+                        System.err.println("⚠️ Timeout: Một số downloads chưa hoàn thành sau 60s");
+                    } else {
+                        System.out.println("✅ Tất cả downloads đã hoàn thành!");
+                    }
+                } catch (InterruptedException e) {
+                    System.err.println("⚠️ Bị gián đoạn khi đợi downloads: " + e.getMessage());
+                    Thread.currentThread().interrupt();
                 }
             }
 
@@ -734,18 +1200,62 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /** Server báo file sửa/tạo mới → tải về và cập nhật cache */
     private void handleServerFileUpdate(JsonObject data) {
         try {
-            Integer fileId   = jInt(data,   "fileId", "FileID", "id");
-            String  fileName = jStr(data,   "fileName", "FileName", "name");
-            Integer folderId = jInt(data,   "folderId", "FolderID", "folderID");
-            String  relPath  = jStr(data,   "relativePath"); // optional
+            Integer fileId   = jInt(data,   "EntityId", "fileId", "FileID", "id");
+            String  fileName = jStr(data,   "Name", "fileName", "FileName", "name");
+            Integer folderId = jInt(data,   "FolderID", "folderId", "folderID");
 
             if (fileId == null || fileName == null || folderId == null) {
                 System.err.println("handleServerFileUpdate: thiếu field. data=" + data);
                 return;
             }
-            String relativePath = (relPath != null && !relPath.isBlank()) ? relPath : fileName;
 
-            System.out.println("[Down-Sync] Tải về: " + relativePath + " (ID=" + fileId + ")");
+            System.out.println("[Down-Sync] Tải về: " + fileName + " (ID=" + fileId + " từ folderId: " + folderId + ")");
+
+            // Trước khi tải file, đảm bảo client đã biết folder mapping
+            Integer localFolderId = null;
+            String folderLocalPath = null;
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement("SELECT FolderID, LocalPath FROM Folders WHERE ServerFolderID = ?")) {
+                ps.setInt(1, folderId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        localFolderId = rs.getInt("FolderID");
+                        folderLocalPath = rs.getString("LocalPath");
+                    }
+                }
+            }
+
+            if (localFolderId == null) {
+                System.err.println("⚠️ Không tìm thấy mapping local cho ServerFolderID=" + folderId + ". Thử đồng bộ folder tree rồi thử lại.");
+                // Thử đồng bộ folder tree từ server 1 lần
+                syncFolderTreeFromServer();
+                try (Connection conn = localDbManager.getConnection();
+                     PreparedStatement ps = conn.prepareStatement("SELECT FolderID, LocalPath FROM Folders WHERE ServerFolderID = ?")) {
+                    ps.setInt(1, folderId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            localFolderId = rs.getInt("FolderID");
+                            folderLocalPath = rs.getString("LocalPath");
+                        }
+                    }
+                }
+            }
+
+            if (localFolderId == null) {
+                System.err.println("⛔ Bỏ qua việc tải file (ServerFileID=" + fileId + ") vì folder local cho ServerFolderID=" + folderId + " vẫn không tồn tại.");
+                return;
+            }
+
+            // XÂY DỰNG relativePath từ folderLocalPath + fileName
+            String relativePath;
+            if (folderLocalPath == null || folderLocalPath.isEmpty()) {
+                // Root folder
+                relativePath = fileName;
+            } else {
+                // Thư mục con: nối path
+                relativePath = folderLocalPath + "/" + fileName;
+            }
+            System.out.println("📍 Đường dẫn tải về: " + relativePath);
 
             com.pbl4.syncproject.client.models.FileItem item = new com.pbl4.syncproject.client.models.FileItem();
             item.setFileId(fileId);
@@ -760,7 +1270,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
             );
         } catch (Exception e) {
-            System.err.println("Lỗi handleServerFileUpdate: " + e.getMessage());
+            System.err.println("Lỗi handleServerFileUpdate cho data=" + data + ": " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -769,7 +1279,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     /** Server báo file bị xóa (xử lý xung đột: LOCAL_STALE thắng) */
     private void handleServerFileDelete(JsonObject data) {
         try {
-            Integer serverFileId = jInt(data, "fileId", "FileID", "id");
+            Integer serverFileId = jInt(data, "EntityId", "fileId", "FileID", "id");
             if (serverFileId == null) {
                 System.err.println("handleServerFileDelete: thiếu fileId. data=" + data);
                 return;
@@ -815,33 +1325,46 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         }
     }
 
-    /** Server báo folder sửa/tạo mới → tạo local và cập nhật cache */
-    private void handleServerFolderUpdate(JsonObject data) {
+    /** Server báo folder sửa/tạo mới → tạo local và cập nhật cache 
+     * @return true nếu thành công, false nếu parent chưa tồn tại */
+    private boolean handleServerFolderUpdate(JsonObject data) {
         try {
-            Integer serverFolderId = jInt(data, "folderId", "FolderID", "folderID");
-            String  folderName     = jStr(data, "folderName", "FolderName", "name");
+            Integer serverFolderId = jInt(data, "FolderID", "folderId", "folderID");
+            String  folderName     = jStr(data, "Name", "folderName", "FolderName", "name");
             String  relativePath   = jStr(data, "relativePath");
-            Integer serverParentId = jInt(data, "parentFolderId", "ParentFolderID", "parentID");
+            Integer serverParentId = jInt(data, "ParentFolderID", "parentFolderId", "parentID");
 
             if (serverFolderId == null || folderName == null) {
                 System.err.println("handleServerFolderUpdate: thiếu field. data=" + data);
-                return;
+                return false;
             }
 
             String rel = (relativePath != null && !relativePath.isBlank()) ? relativePath : folderName;
 
-            Path localPath = syncDirectory.resolve(rel);
-            Files.createDirectories(localPath);
-
+            // Kiểm tra parent folder có tồn tại trong local DB không
             Integer localParentId = null;
             if (serverParentId != null) {
+                // Folder này có parent, cần tìm localParentId
                 try (Connection conn = localDbManager.getConnection();
                      PreparedStatement ps = conn.prepareStatement("SELECT FolderID FROM Folders WHERE ServerFolderID=?")) {
                     ps.setInt(1, serverParentId);
                     ResultSet rs = ps.executeQuery();
-                    if (rs.next()) localParentId = rs.getInt("FolderID");
+                    if (rs.next()) {
+                        localParentId = rs.getInt("FolderID");
+                    } else {
+                        // Parent folder chưa tồn tại, trả về false để thử lại sau
+                        System.out.println("⏳ Tạm hoãn folder '" + folderName + "' (ServerID=" + serverFolderId + 
+                                         ") vì parent folder (ServerID=" + serverParentId + ") chưa tồn tại trong local DB");
+                        return false;
+                    }
                 }
+            } else {
+                // Đây là root folder (không có parent)
+                System.out.println("📁 Đây là ROOT folder: " + folderName + " (ServerID=" + serverFolderId + ")");
             }
+
+            Path localPath = syncDirectory.resolve(rel);
+            Files.createDirectories(localPath);
 
             try (Connection conn = localDbManager.getConnection();
                  PreparedStatement ps = conn.prepareStatement(
@@ -855,9 +1378,13 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 ps.setString(5, LocalDatabaseManager.STATUS_SYNCED);
                 ps.executeUpdate();
             }
+            
+            System.out.println("✅ Đã tạo folder: " + folderName + " (ServerID=" + serverFolderId + ")");
+            return true;
         } catch (Exception e) {
             System.err.println("Lỗi handleServerFolderUpdate: " + e.getMessage());
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -929,25 +1456,49 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             int dot = originalName.lastIndexOf('.');
             if (dot > 0) { baseName = originalName.substring(0, dot); extension = originalName.substring(dot); }
 
-            String conflictedName = String.format("%s (Bản sao xung đột của %s)%s",
-                    baseName, networkService.getCurrentUsername(), extension).trim();
+            // Tạo tên unique để tránh FileAlreadyExistsException
+            String conflictedName;
+            Path conflictedPath;
+            int conflictNumber = 1;
+            do {
+                if (conflictNumber == 1) {
+                    conflictedName = String.format("%s (Bản sao xung đột của %s)%s",
+                            baseName, networkService.getCurrentUsername(), extension).trim();
+                } else {
+                    conflictedName = String.format("%s (Bản sao xung đột %d của %s)%s",
+                            baseName, conflictNumber, networkService.getCurrentUsername(), extension).trim();
+                }
+                conflictedPath = localFile.toPath().resolveSibling(conflictedName);
+                conflictNumber++;
+            } while (Files.exists(conflictedPath));
+            
+            System.out.println("🔄 [Conflict] Đổi tên: " + originalName + " → " + conflictedName);
+            
+            // Đổi tên file trong chế độ muted để tránh FileWatcher phát hiện
+            final Path sourcePath = localFile.toPath();
+            final Path targetPath = conflictedPath;
+            final String finalConflictedName = conflictedName;
+            fileWatcher.runMuted(() -> {
+                try {
+                    Files.move(sourcePath, targetPath);
+                } catch (IOException e) {
+                    throw new RuntimeException("Lỗi đổi tên file conflict: " + e.getMessage(), e);
+                }
+            });
 
-            Path conflictedPath = localFile.toPath().resolveSibling(conflictedName);
-            Files.move(localFile.toPath(), conflictedPath);
-
-            String newSqlPath = syncDirectory.relativize(conflictedPath).toString().replace("\\", "/");
+            String newSqlPath = syncDirectory.relativize(targetPath).toString().replace("\\", "/");
             try (Connection conn = localDbManager.getConnection();
                  PreparedStatement ps = conn.prepareStatement(
                          "UPDATE Files SET LocalPath=?, FileName=?, SyncStatus=? WHERE LocalPath=?")) {
                 ps.setString(1, newSqlPath);
-                ps.setString(2, conflictedName);
+                ps.setString(2, finalConflictedName);
                 ps.setString(3, LocalDatabaseManager.STATUS_CONFLICT);
                 ps.setString(4, task.localPath);
                 ps.executeUpdate();
             }
 
             notificationManager.addNotification(
-                    "⚠️ Xung đột: '" + originalName + "' đã đổi thành '" + conflictedName + "'. Sẽ tải bản server về.",
+                    "⚠️ Xung đột: '" + originalName + "' đã đổi thành '" + finalConflictedName + "'. Sẽ tải bản server về.",
                     com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
             );
         } catch (Exception e) {

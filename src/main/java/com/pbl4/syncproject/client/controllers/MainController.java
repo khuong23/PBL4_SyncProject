@@ -11,7 +11,8 @@ import com.pbl4.syncproject.client.services.SyncAgent;
 import com.pbl4.syncproject.client.services.UploadManager;
 import com.pbl4.syncproject.client.services.DownloadService;
 import com.pbl4.syncproject.client.services.SettingsService;
-import com.pbl4.syncproject.client.services.FileHashService; // --- THÊM IMPORT NÀY ---
+import com.pbl4.syncproject.client.services.FileHashService;
+import com.pbl4.syncproject.client.services.FileWatcherService;
 import com.pbl4.syncproject.client.utils.TaskWrapper;
 import com.pbl4.syncproject.client.views.IMainView;
 import com.pbl4.syncproject.client.views.MainView;
@@ -186,7 +187,10 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         this.syncDirectoryPath = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, defaultSyncDir);
 
         // Khởi tạo DownloadService với đường dẫn ĐÚNG
-        this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), this.syncDirectoryPath);
+        // Note: MainController's downloadService dùng cho manual download, không cần fileWatcher thực sự
+        // Tạo một FileWatcherService instance (không start) để truyền vào constructor
+        FileWatcherService dummyWatcher = new FileWatcherService();
+        this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), this.syncDirectoryPath, dummyWatcher, folderService);
         System.out.println("✅ Khởi tạo DownloadService với đường dẫn: " + this.syncDirectoryPath);
         // -------------------------------------------------------
 
@@ -301,13 +305,17 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      */
     private void setupDirectoryTreeWithLazyLoading() {
         Folders rootFolderData = new Folders();
-        rootFolderData.setFolderId(0); // ID 0 đại diện cho gốc ảo, không có trong DB
+        rootFolderData.setFolderId(1); // ID 1 là thư mục gốc thật trong DB
         rootFolderData.setFolderName("Thư mục đồng bộ");
 
         TreeItem<Folders> rootItem = new TreeItem<>(rootFolderData);
         rootItem.setExpanded(true);
         treeDirectory.setRoot(rootItem);
         treeDirectory.setShowRoot(true);
+        
+        // Tự động chọn root folder khi khởi tạo
+        treeDirectory.getSelectionModel().select(rootItem);
+        currentFolderId = 1; // Set default to root folder
 
         treeDirectory.setCellFactory(tv -> new TreeCell<Folders>() {
             @Override
@@ -548,14 +556,78 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         Platform.runLater(() -> {
             System.out.println("🔄 [MainController] Nhận tín hiệu thay đổi local, đang refresh UI...");
 
-            // Refresh lại danh sách file để hiển thị màu mới
+            // Refresh lại danh sách file TỪ LOCAL DB (không phải từ server)
+            // để hiển thị đúng trạng thái "Đang chờ upload"
             if (currentFolderId > 0) {
-                loadDirectoryFiles(currentFolderId);
+                loadDirectoryFilesFromLocalDB(currentFolderId);
             }
 
             // Cập nhật status message
             mainView.setStatusMessage("📝 Phát hiện thay đổi file local");
         });
+    }
+    
+    /**
+     * Load danh sách files từ Local DB thay vì từ server
+     * Dùng khi cần hiển thị trạng thái real-time (QUEUED, LOCAL_STALE, etc.)
+     */
+    private void loadDirectoryFilesFromLocalDB(int folderId) {
+        TaskWrapper.executeAsync(
+                "Đang tải danh sách file từ cache local...",
+                () -> {
+                    // Tìm local FolderID tương ứng với server FolderID
+                    // (Giả sử folderId là ServerFolderID, cần convert sang local FolderID)
+                    Integer localFolderId = null;
+                    try (java.sql.Connection conn = syncAgent.getLocalDbManager().getConnection();
+                         java.sql.PreparedStatement ps = conn.prepareStatement(
+                                 "SELECT FolderID FROM Folders WHERE ServerFolderID = ?")) {
+                        ps.setInt(1, folderId);
+                        java.sql.ResultSet rs = ps.executeQuery();
+                        if (rs.next()) {
+                            localFolderId = rs.getInt("FolderID");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Lỗi tìm local FolderID: " + e.getMessage());
+                        return new java.util.ArrayList<FileItem>();
+                    }
+                    
+                    if (localFolderId == null) {
+                        return new java.util.ArrayList<FileItem>();
+                    }
+                    
+                    // Lấy files từ local DB
+                    java.util.List<java.util.Map<String, Object>> rows = 
+                        syncAgent.getLocalDbManager().getFilesInFolder(localFolderId);
+                    
+                    // Convert sang FileItem
+                    java.util.List<FileItem> items = new java.util.ArrayList<>();
+                    for (java.util.Map<String, Object> row : rows) {
+                        FileItem item = new FileItem();
+                        
+                        Object serverFileIdObj = row.get("serverFileId");
+                        if (serverFileIdObj != null) {
+                            item.setFileId((Integer) serverFileIdObj);
+                        }
+                        
+                        item.setFolderId(folderId); // Server FolderID
+                        item.setFileName((String) row.get("fileName"));
+                        Long fileSize = (Long) row.get("fileSize");
+                        item.setFileSize(fileSize != null ? String.valueOf(fileSize) : "0");
+                        item.setRelativePath((String) row.get("localPath"));
+                        
+                        // Hiển thị trạng thái sync
+                        String syncStatus = (String) row.get("syncStatus");
+                        item.setSyncStatus(syncStatus);
+                        
+                        items.add(item);
+                    }
+                    
+                    return items;
+                },
+                this::onDirectoryFilesLoaded,
+                this::onFileListError,
+                mainView
+        );
     }
     // ----------------------------------------------
 
@@ -698,10 +770,9 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private void upload() {
         // --- BẮT ĐẦU SỬA ĐỔI ---
         // Kiểm tra xem người dùng đã chọn một thư mục hợp lệ hay chưa.
-        // currentFolderId = 1 là thư mục gốc, chúng ta coi nó là chưa chọn.
-        // Hoặc có thể người dùng chưa chọn gì cả (giá trị vẫn là -1).
-        if (currentFolderId <= 0) { // ID thư mục hợp lệ trong CSDL bắt đầu từ 1.
-            mainView.showAlert("Lỗi Tải Lên", "Vui lòng chọn một thư mục cụ thể từ cây thư mục bên trái trước khi tải tệp lên!", IMainView.AlertType.WARNING);
+        // currentFolderId >= 1 là hợp lệ (bao gồm cả thư mục gốc ID=1).
+        if (currentFolderId < 1) { // ID thư mục hợp lệ trong CSDL bắt đầu từ 1.
+            mainView.showAlert("Lỗi Tải Lên", "Vui lòng chọn một thư mục từ cây thư mục bên trái trước khi tải tệp lên!", IMainView.AlertType.WARNING);
             return;
         }
         // --- KẾT THÚC SỬA ĐỔI ---

@@ -224,6 +224,9 @@ public class NetworkService {
             data.addProperty("lastModified", file.lastModified());
 
             if (lastKnownHash != null) data.addProperty("lastKnownHash", lastKnownHash);
+            
+            // FIX: Luôn gửi baseVersion (ngay cả khi = 0) để server xử lý OCC đúng
+            // Server sẽ biết: baseVersion=0 là CREATE, baseVersion > 0 là UPDATE
             data.addProperty("baseVersion", baseVersion);
 
             addUsernameToData(data);
@@ -266,7 +269,7 @@ public class NetworkService {
         return sendRequest(new Request("FOLDER_TREE", data));
     }
 
-    public Response getFolderTree() throws Exception { return getFolderTree(0); }
+    public Response getFolderTree() throws Exception { return getFolderTree(1); } // Mặc định lấy root folder ID=1
 
     // --------------------------- API DOWNLOAD ---------------------------
 
