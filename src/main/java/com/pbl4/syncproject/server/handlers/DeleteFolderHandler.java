@@ -101,7 +101,7 @@ public class DeleteFolderHandler implements RequestHandler {
             }
 
             // Lịch sử
-            SyncHistoryDAO.logAction(conn, userId, SyncHistoryDAO.ACTION_DELETE_FOLDER, null, folderId);
+            SyncHistoryDAO.logAction(conn, userId, SyncHistoryDAO.ACTION_DELETE_FOLDER, null, null);
 
             conn.commit();
 

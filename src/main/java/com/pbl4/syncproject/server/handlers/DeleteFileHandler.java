@@ -90,7 +90,7 @@ public class DeleteFileHandler implements RequestHandler {
             }
 
             // Lịch sử
-            SyncHistoryDAO.logAction(conn, userId, SyncHistoryDAO.ACTION_DELETE_FILE, meta.fileId, meta.folderId);
+            SyncHistoryDAO.logAction(conn, userId, SyncHistoryDAO.ACTION_DELETE_FILE, null, meta.folderId);
 
             conn.commit();
 
