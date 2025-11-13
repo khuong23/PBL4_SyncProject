@@ -350,6 +350,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
                 if (eventListener != null) eventListener.onLocalChangeDetected();
                 System.out.println("[SyncAgent] ✓ " + newStatus + " + QUEUED UPLOAD : " + sqlPath);
+                triggerSyncQueue();
             }
         } catch (Exception e) {
             System.err.println("Lỗi xử lý thay đổi file: " + e.getMessage());
@@ -425,6 +426,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 }
             }
             System.out.println("[SyncAgent] QUEUED CREATE_FOLDER: " + sqlPath + " (parentSrv=" + parentServerId + ")");
+            triggerSyncQueue();
         } catch (Exception e) {
             System.err.println("Lỗi xử lý thư mục: " + e.getMessage());
         }
@@ -462,6 +464,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                             }
                         }
                     }
+                    triggerSyncQueue();
                     return;
                 }
             }
@@ -1331,7 +1334,6 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         try {
             Integer serverFolderId = jInt(data, "FolderID", "folderId", "folderID");
             String  folderName     = jStr(data, "Name", "folderName", "FolderName", "name");
-            String  relativePath   = jStr(data, "relativePath");
             Integer serverParentId = jInt(data, "ParentFolderID", "parentFolderId", "parentID");
 
             if (serverFolderId == null || folderName == null) {
@@ -1339,48 +1341,70 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 return false;
             }
 
-            String rel = (relativePath != null && !relativePath.isBlank()) ? relativePath : folderName;
+            // ----- 1) Xử lý ROOT: LocalPath = "" ; ParentFolderID = NULL ; KHÔNG tạo thư mục vật lý
+            if (serverParentId == null || serverFolderId == 1) {
+                try (var conn = localDbManager.getConnection();
+                     var ps = conn.prepareStatement(
+                             "INSERT INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) " +
+                                     "VALUES (?, NULL, ?, '', 'SYNCED') " +
+                                     "ON CONFLICT(ServerFolderID) DO UPDATE SET " +
+                                     "  ParentFolderID = NULL, FolderName = excluded.FolderName, " +
+                                     "  LocalPath = '', SyncStatus = 'SYNCED'")) {
+                    ps.setInt(1, serverFolderId);
+                    ps.setString(2, folderName);
+                    ps.executeUpdate();
+                }
+                System.out.println("✅ Cập nhật ROOT: ServerID=" + serverFolderId);
+                return true;
+            }
 
-            // Kiểm tra parent folder có tồn tại trong local DB không
+            // ----- 2) Tìm cha theo ServerFolderID (chuẩn, tránh dùng LocalPath)
             Integer localParentId = null;
-            if (serverParentId != null) {
-                // Folder này có parent, cần tìm localParentId
-                try (Connection conn = localDbManager.getConnection();
-                     PreparedStatement ps = conn.prepareStatement("SELECT FolderID FROM Folders WHERE ServerFolderID=?")) {
-                    ps.setInt(1, serverParentId);
-                    ResultSet rs = ps.executeQuery();
+            String parentRel = "";
+            try (var conn = localDbManager.getConnection();
+                 var ps = conn.prepareStatement(
+                         "SELECT FolderID, LocalPath FROM Folders WHERE ServerFolderID=?")) {
+                ps.setInt(1, serverParentId);
+                try (var rs = ps.executeQuery()) {
                     if (rs.next()) {
                         localParentId = rs.getInt("FolderID");
+                        parentRel = rs.getString("LocalPath");
+                        if (parentRel == null) parentRel = "";
                     } else {
-                        // Parent folder chưa tồn tại, trả về false để thử lại sau
-                        System.out.println("⏳ Tạm hoãn folder '" + folderName + "' (ServerID=" + serverFolderId + 
-                                         ") vì parent folder (ServerID=" + serverParentId + ") chưa tồn tại trong local DB");
+                        // Chưa có cha → để vòng sau xử lý
+                        System.out.println("⏳ Hoãn folder ServerID=" + serverFolderId + " vì chưa có parent ServerID=" + serverParentId);
                         return false;
                     }
                 }
-            } else {
-                // Đây là root folder (không có parent)
-                System.out.println("📁 Đây là ROOT folder: " + folderName + " (ServerID=" + serverFolderId + ")");
             }
 
+            // ----- 3) Build relative path đúng theo cha/con
+            String rel = parentRel.isBlank() ? folderName : (parentRel.replace('\\','/') + "/" + folderName);
+
+            // Tạo thư mục vật lý (nếu rel != "")
             Path localPath = syncDirectory.resolve(rel);
             Files.createDirectories(localPath);
 
-            try (Connection conn = localDbManager.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
-                         "INSERT OR REPLACE INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) " +
-                                 "VALUES (?, ?, ?, ?, ?)")) {
+            // ----- 4) UPSERT KHÔNG làm rơi PK (giữ nguyên FolderID hiện có)
+            try (var conn = localDbManager.getConnection();
+                 var ps = conn.prepareStatement(
+                         "INSERT INTO Folders (ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus) " +
+                                 "VALUES (?, ?, ?, ?, 'SYNCED') " +
+                                 "ON CONFLICT(ServerFolderID) DO UPDATE SET " +
+                                 "  ParentFolderID = excluded.ParentFolderID, " +
+                                 "  FolderName     = excluded.FolderName, " +
+                                 "  LocalPath      = excluded.LocalPath, " +
+                                 "  SyncStatus     = 'SYNCED'")) {
                 ps.setInt(1, serverFolderId);
-                if (localParentId != null) ps.setInt(2, localParentId);
-                else ps.setNull(2, java.sql.Types.INTEGER);
+                if (localParentId != null) ps.setInt(2, localParentId); else ps.setNull(2, java.sql.Types.INTEGER);
                 ps.setString(3, folderName);
                 ps.setString(4, rel);
-                ps.setString(5, LocalDatabaseManager.STATUS_SYNCED);
                 ps.executeUpdate();
             }
-            
-            System.out.println("✅ Đã tạo folder: " + folderName + " (ServerID=" + serverFolderId + ")");
+
+            System.out.println("✅ Đã lưu folder: " + folderName + " (ServerID=" + serverFolderId + ", rel='" + rel + "')");
             return true;
+
         } catch (Exception e) {
             System.err.println("Lỗi handleServerFolderUpdate: " + e.getMessage());
             e.printStackTrace();
@@ -1777,6 +1801,13 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         return -1L; // không có
     }
 
+    /**
+     * Public getter để heartbeat (NetworkService) lấy since_seq hiện tại.
+     */
+    public long getSinceSeqForHeartbeat() {
+        return getSinceSeqCompat();
+    }
+
     // ==== Data structures ====
     private static class SyncTask {
         int queueId;
@@ -1890,5 +1921,4 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         }
         return null;
     }
-
 }

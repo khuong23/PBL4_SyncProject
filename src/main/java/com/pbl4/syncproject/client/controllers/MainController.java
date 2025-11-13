@@ -172,30 +172,46 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         mainView.setNetworkStatus("Mạng: Đang kiểm tra...", true);
         mainView.setUserInfo("User: " + currentUser);
 
-        // --- THÊM LOGIC MỚI: LẮNG NGHE TRẠNG THÁI MẠNG ---
+        // --- LẮNG NGHE TRẠNG THÁI MẠNG ---
         networkService.isOnlineProperty().addListener((obs, wasOnline, isNowOnline) -> {
             // Được gọi mỗi khi trạng thái online/offline thay đổi
             onNetworkStatusChanged(isNowOnline);
         });
-
-        // Khởi động "nhịp tim"
-        networkService.startHeartbeat();
         // --------------------------------------------------
 
-        // --- SỬA LẠI: Lấy đường dẫn đồng bộ TỪ FILE CÀI ĐẶT ---
+        // --- Lấy đường dẫn đồng bộ TỪ FILE CÀI ĐẶT ---
         String defaultSyncDir = System.getProperty("user.home") + File.separator + "SyncData";
         this.syncDirectoryPath = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, defaultSyncDir);
 
         // Khởi tạo DownloadService với đường dẫn ĐÚNG
-        // Note: MainController's downloadService dùng cho manual download, không cần fileWatcher thực sự
-        // Tạo một FileWatcherService instance (không start) để truyền vào constructor
         FileWatcherService dummyWatcher = new FileWatcherService();
         this.downloadService = new DownloadService(networkService, LocalDatabaseManager.getInstance(), this.syncDirectoryPath, dummyWatcher, folderService);
         System.out.println("✅ Khởi tạo DownloadService với đường dẫn: " + this.syncDirectoryPath);
-        // -------------------------------------------------------
 
-        // Load initial data sau khi đã có services
+        // Load initial data sau khi đã có services (trong đó có startSyncAgent)
         loadInitialData();
+
+        // 🔥 SAU KHI SYNCAGENT ĐÃ START → BẬT HEARTBEAT THEO SEQ
+        networkService.startHeartbeat(
+                // onRemoteChange: khi lastSeq > since_seq
+                () -> {
+                    if (syncAgent != null) {
+                        System.out.println("🔥 Heartbeat phát hiện lastSeq mới → triggerSyncQueue()");
+                        syncAgent.triggerSyncQueue();
+                    }
+                },
+                // getSinceSeq: đọc từ SyncAgent
+                () -> {
+                    if (syncAgent != null) {
+                        try {
+                            return syncAgent.getSinceSeqForHeartbeat();
+                        } catch (Exception e) {
+                            System.err.println("Lỗi lấy since_seq trong heartbeat: " + e.getMessage());
+                        }
+                    }
+                    return 0L;
+                }
+        );
     }
 
     /**
@@ -552,6 +568,10 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      */
     @Override
     public void onLocalChangeDetected() {
+        // Đánh thức sync queue (nếu chưa chạy)
+        if (syncAgent != null) {
+            syncAgent.triggerSyncQueue();
+        }
         // Chuyển sang UI thread để cập nhật giao diện
         Platform.runLater(() -> {
             System.out.println("🔄 [MainController] Nhận tín hiệu thay đổi local, đang refresh UI...");
