@@ -65,7 +65,30 @@ public class DeleteFileHandler implements RequestHandler {
             filePath = folderPath.resolve(meta.fileName).normalize();
             StorageManager.getInstance().assertWithinRoot(filePath);
 
-            // Ghi change-feed trước khi xoá row (tombstone)
+            // ===== BƯỚC 1: XÓA TẤT CẢ LỊCH SỬ THAY ĐỔI CỦA FILE =====
+            // Đây là bước QUAN TRỌNG để tránh các bản ghi "ma" trong Changes table
+            int deletedChangeRecords = 0;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "DELETE FROM Changes WHERE EntityType='FILE' AND EntityId=?")) {
+                ps.setInt(1, meta.fileId);
+                deletedChangeRecords = ps.executeUpdate();
+            }
+            System.out.println("🗑️ [DeleteFile] Đã xóa " + deletedChangeRecords + 
+                    " bản ghi lịch sử thay đổi của FileID=" + meta.fileId);
+
+            // ===== BƯỚC 2: XÓA FILE METADATA (từ bảng Files) =====
+            // Guard theo PK để đảm bảo chỉ xóa đúng file
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM Files WHERE FileID=?")) {
+                ps.setInt(1, meta.fileId);
+                int rows = ps.executeUpdate();
+                if (rows == 0) {
+                    conn.rollback();
+                    return err("Xoá DB thất bại (FileID=" + meta.fileId + ")");
+                }
+            }
+
+            // ===== BƯỚC 3: GHI 1 BẢN GHI DELETE VÀO CHANGE-FEED =====
+            // Đây là tombstone record để client biết file đã bị xóa
             int newVersion = meta.version + 1;
             long seq = ChangesDAO.insertFileChange(
                     conn,
@@ -78,16 +101,6 @@ public class DeleteFileHandler implements RequestHandler {
                     meta.fileName,
                     userId
             );
-
-            // Xoá DB (guard theo PK là đủ; có thể thêm WHERE Version=? nếu muốn cực chặt)
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM Files WHERE FileID=?")) {
-                ps.setInt(1, meta.fileId);
-                int rows = ps.executeUpdate();
-                if (rows == 0) {
-                    conn.rollback();
-                    return err("Xoá DB thất bại (FileID=" + meta.fileId + ")");
-                }
-            }
 
             // Lịch sử
             SyncHistoryDAO.logAction(conn, userId, SyncHistoryDAO.ACTION_DELETE_FILE, null, meta.folderId);

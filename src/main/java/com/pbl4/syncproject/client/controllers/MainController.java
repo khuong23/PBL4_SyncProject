@@ -201,16 +201,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                     }
                 },
                 // getSinceSeq: đọc từ SyncAgent
-                () -> {
-                    if (syncAgent != null) {
-                        try {
-                            return syncAgent.getSinceSeqForHeartbeat();
-                        } catch (Exception e) {
-                            System.err.println("Lỗi lấy since_seq trong heartbeat: " + e.getMessage());
-                        }
-                    }
-                    return 0L;
-                }
+                () -> (syncAgent != null) ? syncAgent.getSinceSeqForHeartbeat() : 0L
         );
     }
 

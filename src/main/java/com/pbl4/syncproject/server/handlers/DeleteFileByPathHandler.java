@@ -85,24 +85,50 @@ public class DeleteFileByPathHandler implements RequestHandler {
                 return res;
             }
 
-            // Xóa trên đĩa
+            // Chuẩn bị đường dẫn file vật lý
             Path physicalFolderPath = StorageManager.getInstance().resolveFolderPathFromDb(conn, meta.folderId);
             StorageManager.getInstance().assertWithinRoot(physicalFolderPath);
             Path filePath = physicalFolderPath.resolve(meta.fileName).normalize();
             StorageManager.getInstance().assertWithinRoot(filePath);
 
-            boolean existedOnDisk = Files.deleteIfExists(filePath);
-            System.out.println("[INFO] DeleteFileByPath: " + filePath + " existed=" + existedOnDisk);
-
-            // Xóa DB
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM Files WHERE FileID=?")) {
-                ps.setInt(1, meta.fileId);
-                int rows = ps.executeUpdate();
-                if (rows == 0) {
-                    res.setStatus("error");
-                    res.setMessage("Xóa DB thất bại (FileID=" + meta.fileId + ")");
-                    return res;
+            // ===== BẮT ĐẦU TRANSACTION ĐỂ ĐẢM BẢO ATOMICITY =====
+            conn.setAutoCommit(false);
+            try {
+                // BƯỚC 1: Xóa TẤT CẢ lịch sử thay đổi của file
+                int deletedChangeRecords = 0;
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "DELETE FROM Changes WHERE EntityType='FILE' AND EntityId=?")) {
+                    ps.setInt(1, meta.fileId);
+                    deletedChangeRecords = ps.executeUpdate();
                 }
+                System.out.println("🗑️ [DeleteFileByPath] Đã xóa " + deletedChangeRecords + 
+                        " bản ghi lịch sử của FileID=" + meta.fileId);
+
+                // BƯỚC 2: Xóa file metadata từ bảng Files
+                try (PreparedStatement ps = conn.prepareStatement("DELETE FROM Files WHERE FileID=?")) {
+                    ps.setInt(1, meta.fileId);
+                    int rows = ps.executeUpdate();
+                    if (rows == 0) {
+                        conn.rollback();
+                        res.setStatus("error");
+                        res.setMessage("Xóa DB thất bại (FileID=" + meta.fileId + ")");
+                        return res;
+                    }
+                }
+
+                // BƯỚC 3: Xóa file vật lý trên đĩa
+                boolean existedOnDisk = Files.deleteIfExists(filePath);
+                System.out.println("[INFO] DeleteFileByPath: " + filePath + " existed=" + existedOnDisk);
+
+                // Nếu tất cả thành công, commit transaction
+                conn.commit();
+                
+            } catch (Exception e) {
+                // Nếu có lỗi, rollback toàn bộ
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
             }
 
             res.setStatus("success");
