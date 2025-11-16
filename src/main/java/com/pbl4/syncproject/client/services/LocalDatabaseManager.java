@@ -3,8 +3,16 @@ package com.pbl4.syncproject.client.services;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
+// --- FIX RACE CONDITION: Thêm HikariCP ---
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+// -----------------------------------------
+
 /**
  * Dùng initializeDatabase(true) để reset sạch và tạo schema chuẩn.
+ * FIX: Đã chuyển sang dùng HikariCP (Connection Pool) với maxPoolSize=1
+ * để giải quyết triệt để lỗi race condition (tranh chấp) của SQLite
+ * khi nhiều luồng (FileWatcher, SyncQueue) truy cập cùng lúc.
  */
 public class LocalDatabaseManager {
 
@@ -15,6 +23,10 @@ public class LocalDatabaseManager {
     }
 
     private static final String DB_URL = "jdbc:sqlite:client_cache.db";
+    
+    // --- FIX: Thêm HikariCP DataSource ---
+    private final HikariDataSource ds;
+    // -------------------------------------
 
     // ===== Trạng thái đồng bộ =====
     public static final String STATUS_SYNCED        = "SYNCED";
@@ -28,8 +40,34 @@ public class LocalDatabaseManager {
         try {
             Class.forName("org.sqlite.JDBC");
             ensureDbDirExists();
-        } catch (ClassNotFoundException e) {
-            System.err.println("Không tìm thấy driver SQLite. Kiểm tra pom.xml.");
+
+            // --- FIX: CẤU HÌNH HIKARI POOL ---
+            HikariConfig config = new HikariConfig();
+            config.setJdbcUrl(DB_URL);
+            
+            // QUAN TRỌNG: Buộc SQLite chạy tuần tự (từng luồng một)
+            // Bằng cách chỉ cho phép 1 kết nối duy nhất trong pool.
+            config.setMaximumPoolSize(1); 
+            
+            config.setConnectionTimeout(1000); // Tăng thời gian chờ kết nối
+            config.setValidationTimeout(300);
+            
+            // Đặt các PRAGMA 1 lần duy nhất khi kết nối được tạo
+            config.setConnectionInitSql(
+                "PRAGMA foreign_keys = ON; " +
+                "PRAGMA journal_mode = WAL; " +
+                "PRAGMA synchronous = NORMAL; " +
+                "PRAGMA busy_timeout = 5000;"
+            );
+        
+            this.ds = new HikariDataSource(config);
+            System.out.println("✅ HikariCP initialized for SQLite with maxPoolSize=1");
+            // ---------------------------------
+
+        } catch (Exception e) {
+            System.err.println("Không tìm thấy driver SQLite hoặc lỗi pool: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Không thể khởi tạo CSDL local", e);
         }
     }
 
@@ -40,16 +78,15 @@ public class LocalDatabaseManager {
             if (parent != null) Files.createDirectories(parent);
         } catch (Exception ignored) {}
     }
-    // Luôn bật PRAGMA cần thiết
+    
+    /**
+     * FIX: Lấy kết nối TỪ POOL thay vì tạo mới
+     */
     public Connection getConnection() throws SQLException {
-        Connection c = DriverManager.getConnection(DB_URL);
-        try (Statement s = c.createStatement()) {
-            s.execute("PRAGMA foreign_keys = ON;");
-            s.execute("PRAGMA journal_mode = WAL;");
-            s.execute("PRAGMA synchronous = NORMAL;");
-            s.execute("PRAGMA busy_timeout = 5000;");
-        }
-        return c;
+        // --- SỬA LẠI: Lấy kết nối từ pool ---
+        return ds.getConnection();
+        // Không cần chạy PRAGMA nữa vì pool đã tự làm (ConnectionInitSql)
+        // ------------------------------------
     }
     /**
      * Khởi tạo CSDL.
