@@ -69,9 +69,9 @@ public class DownloadService {
         
         if (localFolderId == null) {
             System.err.println("⚠️ Không tìm thấy mapping local cho ServerFolderID=" + serverFolderId + " (cho file " + originalFileName + "). Thử đồng bộ folder tree...");
-            // Thử re-sync cây thư mục
+            // FIX: Thử re-sync cây thư mục với LocalDatabaseManager
             try {
-                folderService.syncFolderTreeFromServer();
+                folderService.syncFolderTreeFromServer(localDbManager);
             } catch (Exception e) {
                 System.err.println("Lỗi khi re-sync folder tree: " + e.getMessage());
             }

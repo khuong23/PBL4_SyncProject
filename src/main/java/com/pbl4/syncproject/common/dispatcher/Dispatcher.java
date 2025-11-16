@@ -26,7 +26,7 @@ public class Dispatcher {
         handlers.put("GET_FOLDER_PERMISSIONS", new GetFolderPermissionsHandler());
         handlers.put("GET_USER_LIST", new GetUserListHandler());
         handlers.put("GET_CHANGES_SINCE", new GetChangesSinceHandler());
-        //Ping và trả về lastSeq
+        handlers.put("GET_FEED_HEAD", new GetFeedHeadHandler()); // FIX: Handler chuyên dụng trả về lastSeq
         handlers.put("PING", new PingHandler());
     }
 
