@@ -6,9 +6,19 @@ import com.pbl4.syncproject.common.jsonhandler.Response;
 
 public class FolderService {
     private final NetworkService net;
+    private final LocalDatabaseManager localDbManager; // FIX: Thêm để lưu folder mapping
 
+    // Constructor cũ - deprecated
+    @Deprecated
     public FolderService(NetworkService net) {
         this.net = net;
+        this.localDbManager = null;
+    }
+    
+    // Constructor mới - inject LocalDatabaseManager
+    public FolderService(NetworkService net, LocalDatabaseManager localDbManager) {
+        this.net = net;
+        this.localDbManager = localDbManager;
     }
 
     public Response createFolder(String folderName) throws Exception {
@@ -69,13 +79,26 @@ public class FolderService {
     public void syncFolderTreeFromServer(LocalDatabaseManager localDbManager) throws Exception {
         System.out.println("📁 [FolderService] Đang đồng bộ cây thư mục từ server...");
         
+        // Kiểm tra localDbManager
+        LocalDatabaseManager dbManager = (localDbManager != null) ? localDbManager : this.localDbManager;
+        if (dbManager == null) {
+            throw new IllegalStateException("LocalDatabaseManager is not initialized");
+        }
+        
         java.util.Set<Integer> processedFolders = new java.util.HashSet<>();
         processedFolders.add(1); // Root folder (ID=1) đã tồn tại
         
         // Tải đệ quy từ root
-        syncFolderTreeRecursive(null, processedFolders, localDbManager);
+        syncFolderTreeRecursive(null, processedFolders, dbManager);
         
         System.out.println("✅ [FolderService] Đã đồng bộ " + processedFolders.size() + " thư mục từ server");
+    }
+    
+    /**
+     * Overload method - sử dụng localDbManager từ field
+     */
+    public void syncFolderTreeFromServer() throws Exception {
+        syncFolderTreeFromServer(this.localDbManager);
     }
     
     /**

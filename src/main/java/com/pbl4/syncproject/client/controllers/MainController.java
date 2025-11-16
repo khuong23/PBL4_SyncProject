@@ -151,7 +151,8 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         fileService = new FileService(networkService, LocalDatabaseManager.getInstance());
         // -----------------------------------------------------------
 
-        folderService = new FolderService(networkService);
+        // FIX: Inject LocalDatabaseManager vào FolderService để nó có thể lưu folder mapping
+        folderService = new FolderService(networkService, LocalDatabaseManager.getInstance());
 
         // --- SỬA LẠI: Khởi tạo mainView trước ---
         // mainView phải được khởi tạo trước
