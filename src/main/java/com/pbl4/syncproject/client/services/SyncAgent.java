@@ -104,7 +104,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         if (!dir.exists()) dir.mkdirs();
 
         // Tạo FolderService wrapper cho DownloadService
-        FolderService folderServiceWrapper = new FolderService(networkService);
+        FolderService folderServiceWrapper = new FolderService(networkService, localDbManager);
         this.downloadService = new DownloadService(networkService, localDbManager, syncDirectoryPath, fileWatcher, folderServiceWrapper);
         
         // Đảm bảo root folder tồn tại trong local DB (với FolderID=1)
@@ -181,44 +181,58 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         Path parentPath = folderPath.getParent();
         int parentFolderId = getOrCreateFolderId(parentPath, conn);
 
-        // insert
+        // insert với ON CONFLICT để tránh lỗi UNIQUE constraint
         String folderName = folderPath.getFileName() != null ? folderPath.getFileName().toString() : "";
-        try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO Folders (ParentFolderID, FolderName, LocalPath, SyncStatus, ServerFolderID) " +
-                        "VALUES (?, ?, ?, 'LOCAL_CREATED', NULL)",
-                PreparedStatement.RETURN_GENERATED_KEYS)) {
+        String sqlInsert = """
+            INSERT INTO Folders (ParentFolderID, FolderName, LocalPath, SyncStatus, ServerFolderID)
+            VALUES (?, ?, ?, 'LOCAL_CREATED', NULL)
+            ON CONFLICT(LocalPath) DO NOTHING
+        """;
+        
+        try (PreparedStatement ps = conn.prepareStatement(sqlInsert, PreparedStatement.RETURN_GENERATED_KEYS)) {
             ps.setInt(1, parentFolderId);
             ps.setString(2, folderName);
             ps.setString(3, sqlPath);
-            ps.executeUpdate();
-            ResultSet rs = ps.getGeneratedKeys();
-            if (rs.next()) {
-                int newFolderId = rs.getInt(1);
+            int affectedRows = ps.executeUpdate();
 
-                // Xếp hàng CREATE_FOLDER cho thư mục này (chống trùng)
-                try (PreparedStatement chk = conn.prepareStatement(
-                        "SELECT 1 FROM SyncQueue WHERE Action='CREATE_FOLDER' AND LocalPath=? LIMIT 1")) {
-                    chk.setString(1, sqlPath);
-                    ResultSet ex = chk.executeQuery();
-                    if (!ex.next()) {
-                        // Tìm parent server id (nếu đã có)
-                        Integer parentServerId = null;
-                        try (PreparedStatement psP = conn.prepareStatement(
-                                "SELECT ServerFolderID FROM Folders WHERE FolderID=?")) {
-                            psP.setInt(1, parentFolderId);
-                            ResultSet r2 = psP.executeQuery();
-                            if (r2.next()) parentServerId = (Integer) r2.getObject(1);
-                        }
-                        try (PreparedStatement psQ = conn.prepareStatement(
-                                "INSERT INTO SyncQueue (Action, LocalPath, TargetParentID, TargetName) VALUES ('CREATE_FOLDER', ?, ?, ?)")) {
-                            psQ.setString(1, sqlPath);
-                            psQ.setInt(2, parentServerId != null ? parentServerId : 1);
-                            psQ.setString(3, folderName);
-                            psQ.executeUpdate();
+            if (affectedRows > 0) {
+                // INSERT thành công (hàng mới)
+                ResultSet rs = ps.getGeneratedKeys();
+                if (rs.next()) {
+                    int newFolderId = rs.getInt(1);
+                    
+                    // Xếp hàng CREATE_FOLDER cho thư mục này (chống trùng)
+                    try (PreparedStatement chk = conn.prepareStatement(
+                            "SELECT 1 FROM SyncQueue WHERE Action='CREATE_FOLDER' AND LocalPath=? LIMIT 1")) {
+                        chk.setString(1, sqlPath);
+                        ResultSet ex = chk.executeQuery();
+                        if (!ex.next()) {
+                            // Tìm parent server id (nếu đã có)
+                            Integer parentServerId = null;
+                            try (PreparedStatement psP = conn.prepareStatement(
+                                    "SELECT ServerFolderID FROM Folders WHERE FolderID=?")) {
+                                psP.setInt(1, parentFolderId);
+                                ResultSet r2 = psP.executeQuery();
+                                if (r2.next()) parentServerId = (Integer) r2.getObject(1);
+                            }
+                            try (PreparedStatement psQ = conn.prepareStatement(
+                                    "INSERT INTO SyncQueue (Action, LocalPath, TargetParentID, TargetName) VALUES ('CREATE_FOLDER', ?, ?, ?)")) {
+                                psQ.setString(1, sqlPath);
+                                psQ.setInt(2, parentServerId != null ? parentServerId : 1);
+                                psQ.setString(3, folderName);
+                                psQ.executeUpdate();
+                            }
                         }
                     }
+                    return newFolderId;
                 }
-                return newFolderId;
+            } else {
+                // INSERT thất bại do CONFLICT - Lấy ID của hàng đã tồn tại
+                try (PreparedStatement psSelect = conn.prepareStatement("SELECT FolderID FROM Folders WHERE LocalPath=?")) {
+                    psSelect.setString(1, sqlPath);
+                    ResultSet rsSelect = psSelect.executeQuery();
+                    if (rsSelect.next()) return rsSelect.getInt("FolderID");
+                }
             }
         }
         throw new SQLException("Không tạo được FolderID cho " + sqlPath);
@@ -269,7 +283,6 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
             try (Connection conn = localDbManager.getConnection()) {
                 String lastHash = null;
-                String oldStatus = null;
                 Integer fileId = null;
                 Integer serverFileId = null;
                 Integer lastVersion = null; // THÊM: Lưu LastKnownVersion
@@ -293,7 +306,6 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         
                         lastHash = rs.getString("LastKnownHash");
                         lastVersion = rs.getObject("LastKnownVersion", Integer.class); // THÊM: Đọc version
-                        oldStatus = rs.getString("SyncStatus");
                         System.out.println("✅ [DEBUG] File tìm thấy: FileID=" + fileId + ", ServerFileID=" + serverFileId + ", lastHash=" + lastHash + ", lastVersion=" + lastVersion);
                     } else {
                         System.out.println("❌ [DEBUG] File KHÔNG tìm thấy trong DB!");
@@ -311,26 +323,45 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
 
                 int folderId = getOrCreateFolderId(filePath.getParent(), conn);
 
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT OR REPLACE INTO Files " +
-                                "(FileID, FolderID, FileName, FileSize, LocalPath, LastKnownHash, LastKnownVersion, SyncStatus) " +
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                    if (fileId != null) ps.setInt(1, fileId);
-                    else ps.setNull(1, java.sql.Types.INTEGER);
-                    ps.setInt(2, folderId);
-                    ps.setString(3, file.getName());
-                    ps.setLong(4, file.length());
-                    ps.setString(5, sqlPath);
-                    ps.setString(6, lastHash); // giữ baseline của server để OCC
+                // Sử dụng ON CONFLICT(LocalPath) DO UPDATE thay vì INSERT OR REPLACE
+                // để tránh mất FileID và giữ đúng dữ liệu baseline cho OCC
+                String sqlUpsert = """
+                    INSERT INTO Files 
+                        (FolderID, FileName, FileSize, LocalPath, LastKnownHash, LastKnownVersion, SyncStatus, ServerFileID)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(LocalPath) DO UPDATE SET
+                        FolderID = excluded.FolderID,
+                        FileName = excluded.FileName,
+                        FileSize = excluded.FileSize,
+                        LastKnownHash = excluded.LastKnownHash,
+                        LastKnownVersion = excluded.LastKnownVersion,
+                        SyncStatus = excluded.SyncStatus
+                """;
+
+                try (PreparedStatement ps = conn.prepareStatement(sqlUpsert)) {
+                    // Các cột trong VALUES
+                    ps.setInt(1, folderId);
+                    ps.setString(2, file.getName());
+                    ps.setLong(3, file.length());
+                    ps.setString(4, sqlPath);
+                    ps.setString(5, lastHash); // giữ baseline của server để OCC
                     
-                    // THÊM: Giữ nguyên LastKnownVersion (không reset về 0)
+                    // Giữ nguyên LastKnownVersion (không reset về 0 cho file đã sync)
                     if (lastVersion != null) {
-                        ps.setInt(7, lastVersion);
+                        ps.setInt(6, lastVersion);
                     } else {
-                        ps.setInt(7, 0); // Default về 0 cho file mới
+                        ps.setInt(6, 0); // Default về 0 cho file mới
                     }
                     
-                    ps.setString(8, newStatus); // SyncStatus bây giờ là tham số 8
+                    ps.setString(7, newStatus);
+                    
+                    // Giữ nguyên ServerFileID nếu đã có
+                    if (serverFileId != null) {
+                        ps.setInt(8, serverFileId);
+                    } else {
+                        ps.setNull(8, java.sql.Types.INTEGER);
+                    }
+                    
                     ps.executeUpdate();
                 }
 
@@ -493,42 +524,61 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     }
 
     private void processSyncQueueInternal() {
-        try (Connection conn = localDbManager.getConnection()) {
+        try {
             while (true) {
                 if (!networkService.isOnline()) {
                     System.out.println("🔌 Offline, tạm dừng xử lý Queue.");
                     break;
                 }
-                SyncTask task = getNextTask(conn);
+
+                // 1. Lấy task (tự mở/đóng connection)
+                SyncTask task = getNextTask();
                 if (task == null) {
                     System.out.println("✅ Up-sync xong → chạy Down-sync.");
                     triggerDownSync();
                     break;
                 }
+
                 try {
                     boolean ok;
                     switch (task.action) {
-                        case "CREATE_FOLDER": ok = handleCreateFolderTask(task, conn); break;
+                        // 2. Các handler tự mở/đóng connection
+                        case "CREATE_FOLDER": ok = handleCreateFolderTask(task); break;
                         case "UPLOAD":        ok = handleUploadTask(task); break;
                         case "DELETE_FILE":   ok = handleDeleteFileTask(task); break;
                         default:
                             System.out.println("⚠️ Chưa hỗ trợ action: " + task.action);
                             ok = true;
                     }
-                    if (ok) deleteTask(conn, task.queueId);
+
+                    // 3. Xóa task (tự mở/đóng connection)
+                    if (ok) deleteTask(task.queueId);
                     else System.err.println("❌ Task fail, sẽ retry sau");
+
                 } catch (Exception e) {
                     System.err.println("Lỗi xử lý task " + task.queueId + ": " + e.getMessage());
                 }
                 try { Thread.sleep(50); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
             }
-        } catch (SQLException e) {
+        } catch (Exception e) { // Catch lỗi chung (ví dụ: getNextTask không thể lấy connection)
             e.printStackTrace();
         } finally {
             isProcessingQueue.set(false);
         }
     }
 
+    /**
+     * Overload: Tự mở/đóng connection
+     */
+    private SyncTask getNextTask() {
+        try (Connection conn = localDbManager.getConnection()) {
+            return getNextTask(conn);
+        } catch (SQLException e) {
+            System.err.println("❌ getNextTask() lỗi: " + e.getMessage());
+            return null;
+        }
+    }
+    
     private SyncTask getNextTask(Connection conn) throws SQLException {
         String sql = "SELECT * FROM SyncQueue ORDER BY " +
                 "CASE Action WHEN 'CREATE_FOLDER' THEN 1 WHEN 'UPLOAD' THEN 2 WHEN 'DELETE_FILE' THEN 3 WHEN 'DELETE_FOLDER' THEN 4 ELSE 5 END, " +
@@ -550,6 +600,17 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         return null;
     }
 
+    /**
+     * Overload: Tự mở/đóng connection
+     */
+    private void deleteTask(int queueId) {
+        try (Connection conn = localDbManager.getConnection()) {
+            deleteTask(conn, queueId);
+        } catch (SQLException e) {
+            System.err.println("❌ deleteTask() lỗi: " + e.getMessage());
+        }
+    }
+    
     private void deleteTask(Connection conn, int queueId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("DELETE FROM SyncQueue WHERE QueueID=?")) {
             ps.setInt(1, queueId);
@@ -673,6 +734,15 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         }
     }
 
+    /**
+     * Overload: Tự mở/đóng connection
+     */
+    private boolean handleCreateFolderTask(SyncTask task) throws Exception {
+        try (Connection conn = localDbManager.getConnection()) {
+            return handleCreateFolderTask(task, conn);
+        }
+    }
+    
     private boolean handleCreateFolderTask(SyncTask task, Connection conn) throws Exception {
         if (task.targetParentID == null || task.targetName == null) {
             System.err.println("❌ CREATE_FOLDER thiếu thông tin");

@@ -49,8 +49,8 @@ public class LocalDatabaseManager {
             // Bằng cách chỉ cho phép 1 kết nối duy nhất trong pool.
             config.setMaximumPoolSize(1); 
             
-            config.setConnectionTimeout(1000); // Tăng thời gian chờ kết nối
-            config.setValidationTimeout(300);
+            config.setConnectionTimeout(10000); // Tăng thời gian chờ kết nối
+            config.setValidationTimeout(3000);
             
             // Đặt các PRAGMA 1 lần duy nhất khi kết nối được tạo
             config.setConnectionInitSql(
