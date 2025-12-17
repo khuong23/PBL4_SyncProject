@@ -116,7 +116,8 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             System.out.println("🪞 First run → MIRROR overwrite local from server (seq)");
             suppressWatcherEvents.set(true);
             try {
-                // xoá local, reset cache, tải toàn bộ từ server
+                mirrorFromServerOverwriteLocal();
+                if (eventListener != null) eventListener.onLocalChangeDetected();
             } finally {
                 suppressWatcherEvents.set(false);
             }
