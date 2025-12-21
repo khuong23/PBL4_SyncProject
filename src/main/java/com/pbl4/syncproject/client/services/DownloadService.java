@@ -38,24 +38,22 @@ public class DownloadService {
             throw new IllegalArgumentException("FileItem không hợp lệ hoặc fileId=0.");
         }
 
-        // Giữ lại thông tin gốc từ FileItem (có thể không hoàn chỉnh từ change event)
         final String originalFileName = fileItem.getFileName();
         final String originalRelativePath = fileItem.getRelativePath();
 
         System.out.println("Đang tải về: " + originalFileName + " (ID: " + fileItem.getFileId() + ")");
 
-        // 1. GỌI API TẢI FILE TRƯỚC (để lấy dữ liệu đáng tin cậy)
-        Response response = networkService.downloadFile(fileItem.getFileId(), originalFileName, 0); // folderId=0 vì chưa biết
+        // 1. GỌI API TẢI FILE - Use 3-parameter overload that exists in NetworkService
+        Response response = networkService.downloadFile(fileItem.getFileId(), originalFileName, 0);
         if (response == null || !"success".equals(response.getStatus())) {
             throw new IOException("Tải file thất bại từ server: " + (response != null ? response.getMessage() : "null response"));
         }
 
-        // 2. LẤY DỮ LIỆU ĐÁNG TIN CẬY TỪ RESPONSE API
+        // 2. LẤY DỮ LIỆU TỪ RESPONSE
         JsonObject data = response.getData().getAsJsonObject();
         String base64Content = data.has("fileContent") ? data.get("fileContent").getAsString() : "";
         String serverHash = data.has("hash") ? data.get("hash").getAsString() : "";
         int serverVersion = data.has("version") ? data.get("version").getAsInt() : 1;
-        
         // QUAN TRỌNG: Lấy serverFolderId từ response (ĐÁNG TIN CẬY), không dùng fileItem.getFolderId()
         int serverFolderId = data.has("folderId") ? data.get("folderId").getAsInt() : fileItem.getFolderId();
         
@@ -168,5 +166,14 @@ public class DownloadService {
         
         System.out.println("✅ Đã cập nhật cache sau download: " + relativePath + " (v" + serverVersion + ")");
         // --- KẾT THÚC SỬA LỖI ---
+    }
+
+    // Add overload for MainController compatibility
+    public void downloadAndSaveFile(int fileId, java.nio.file.Path targetPath) throws Exception {
+        FileItem tempItem = new FileItem();
+        tempItem.setFileId(fileId);
+        tempItem.setFileName(targetPath.getFileName().toString());
+        tempItem.setRelativePath(targetPath.toString().replace("\\", "/"));
+        downloadAndSaveFile(tempItem);
     }
 }

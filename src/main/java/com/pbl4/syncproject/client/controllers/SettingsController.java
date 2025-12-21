@@ -186,6 +186,7 @@ public class SettingsController implements Initializable {
         task.setOnSucceeded(e -> {
             Platform.runLater(() -> {
                 if (waitStage.isShowing()) {
+                    waitStage.setOnCloseRequest(null);
                     waitStage.close();
                 }
                 showSuccessMessage("Đã làm mới dữ liệu thành công!");
@@ -197,6 +198,7 @@ public class SettingsController implements Initializable {
         task.setOnFailed(e -> {
             Platform.runLater(() -> {
                 if (waitStage.isShowing()) {
+                    waitStage.setOnCloseRequest(null);
                     waitStage.close();
                 }
                 Throwable ex = task.getException();

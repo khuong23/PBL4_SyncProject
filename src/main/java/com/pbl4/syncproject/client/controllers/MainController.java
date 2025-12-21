@@ -39,10 +39,15 @@ import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * MainController theo nguyên tắc Single Responsibility Principle (SRP)
@@ -139,13 +144,13 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      * Set server address and username from login screen
      * BẮT BUỘC phải gọi method này từ LoginController sau khi login thành công
      */
-    public void setServerAddress(String serverIP, int serverPort, String username) {
+    public void setServerAddress(String serverIP, int serverPort, String username) throws IOException {
         // Lưu username từ login
         this.currentUser = username;
 
         // Initialize services with server address from login
-        networkService = new NetworkService(serverIP, serverPort);
-        networkService.setCurrentUsername(currentUser); // Set username cho NetworkService
+        networkService = new NetworkService();
+        networkService.configure(serverIP, serverPort, username);
 
         // --- SỬA LẠI: Thêm LocalDatabaseManager vào FileService ---
         fileService = new FileService(networkService, LocalDatabaseManager.getInstance());
@@ -164,7 +169,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         // --- SỬA LẠI DÒNG NÀY ---
         // Dòng cũ: syncAgent = new SyncAgent(networkService, uploadManager);
         // Dòng mới:
-        syncAgent = new SyncAgent(networkService, uploadManager, LocalDatabaseManager.getInstance());
+        syncAgent = new SyncAgent(networkService, LocalDatabaseManager.getInstance());
         // -----------------------
 
         // Cập nhật UI ban đầu
@@ -219,7 +224,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      * Method này giữ lại để tương thích ngược
      */
     @Deprecated
-    public void setServerAddress(String serverIP, int serverPort) {
+    public void setServerAddress(String serverIP, int serverPort) throws IOException {
         setServerAddress(serverIP, serverPort, "guest"); // Default username nếu không truyền
     }
 
@@ -328,7 +333,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
         rootItem.setExpanded(true);
         treeDirectory.setRoot(rootItem);
         treeDirectory.setShowRoot(true);
-        
+
         // Tự động chọn root folder khi khởi tạo
         treeDirectory.getSelectionModel().select(rootItem);
         currentFolderId = 1; // Set default to root folder
@@ -521,16 +526,12 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      */
     private void startSyncAgent() {
         try {
-            // --- SỬA LẠI: Sử dụng biến syncDirectoryPath đã được tải từ SettingsService ---
-            // Dòng cũ: String syncDir = System.getProperty("user.home") + File.separator + "SyncFolder";
-            String syncDir = this.syncDirectoryPath; // Sử dụng đường dẫn từ cài đặt
-            // -------------------------------------------------------------------------------
+            String syncDir = this.syncDirectoryPath;
 
-            // --- ĐĂNG KÝ LISTENER ĐỂ NHẬN THÔNG BÁO TỪ SYNCAGENT ---
             syncAgent.setEventListener(this);
-            // --------------------------------------------------------
 
-            syncAgent.start(syncDir);
+            // Convert String to Path
+            syncAgent.start(Paths.get(syncDir));
             System.out.println("✅ Started sync agent for directory: " + syncDir);
             updateSyncAgentStatus();
         } catch (Exception e) {
@@ -544,12 +545,13 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      */
     private void updateSyncAgentStatus() {
         if (syncAgent != null) {
-            SyncAgent.SyncStatus status = syncAgent.getStatus();
-            String statusText = "Auto Sync: " + (status.isRunning ? "Đang chạy" : "Dừng");
-            if (status.isRunning) {
-                statusText += " | Queue: " + status.queueSize + " | Processed: " + status.processedCount;
+            String status = syncAgent.getStatus(); // Returns "RUNNING" or "STOPPED"
+            String statusText = "Auto Sync: " + status;
+            int pendingCount = syncAgent.getPendingChanges().size();
+            if ("RUNNING".equals(status)) {
+                statusText += " | Pending: " + pendingCount;
             }
-            mainView.setSyncStatus(statusText, status.isRunning);
+            mainView.setSyncStatus(statusText, "RUNNING".equals(status));
         }
     }
 
@@ -566,27 +568,8 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      * Callback từ SyncAgent khi có thay đổi local được phát hiện
      * Method này được gọi từ background thread, nên phải dùng Platform.runLater
      */
-    @Override
-    public void onLocalChangeDetected() {
-        // Đánh thức sync queue (nếu chưa chạy)
-        if (syncAgent != null) {
-            syncAgent.triggerSyncQueue();
-        }
-        // Chuyển sang UI thread để cập nhật giao diện
-        Platform.runLater(() -> {
-            System.out.println("🔄 [MainController] Nhận tín hiệu thay đổi local, đang refresh UI...");
 
-            // Refresh lại danh sách file TỪ LOCAL DB (không phải từ server)
-            // để hiển thị đúng trạng thái "Đang chờ upload"
-            if (currentFolderId > 0) {
-                loadDirectoryFilesFromLocalDB(currentFolderId);
-            }
 
-            // Cập nhật status message
-            mainView.setStatusMessage("📝 Phát hiện thay đổi file local");
-        });
-    }
-    
     /**
      * Load danh sách files từ Local DB thay vì từ server
      * Dùng khi cần hiển thị trạng thái real-time (QUEUED, LOCAL_STALE, etc.)
@@ -610,38 +593,38 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
                         System.err.println("Lỗi tìm local FolderID: " + e.getMessage());
                         return new java.util.ArrayList<FileItem>();
                     }
-                    
+
                     if (localFolderId == null) {
                         return new java.util.ArrayList<FileItem>();
                     }
-                    
+
                     // Lấy files từ local DB
-                    java.util.List<java.util.Map<String, Object>> rows = 
-                        syncAgent.getLocalDbManager().getFilesInFolder(localFolderId);
-                    
+                    java.util.List<java.util.Map<String, Object>> rows =
+                            syncAgent.getLocalDbManager().getFilesInFolder(localFolderId);
+
                     // Convert sang FileItem
                     java.util.List<FileItem> items = new java.util.ArrayList<>();
                     for (java.util.Map<String, Object> row : rows) {
                         FileItem item = new FileItem();
-                        
+
                         Object serverFileIdObj = row.get("serverFileId");
                         if (serverFileIdObj != null) {
                             item.setFileId((Integer) serverFileIdObj);
                         }
-                        
+
                         item.setFolderId(folderId); // Server FolderID
                         item.setFileName((String) row.get("fileName"));
                         Long fileSize = (Long) row.get("fileSize");
                         item.setFileSize(fileSize != null ? String.valueOf(fileSize) : "0");
                         item.setRelativePath((String) row.get("localPath"));
-                        
+
                         // Hiển thị trạng thái sync
                         String syncStatus = (String) row.get("syncStatus");
                         item.setSyncStatus(syncStatus);
-                        
+
                         items.add(item);
                     }
-                    
+
                     return items;
                 },
                 this::onDirectoryFilesLoaded,
@@ -1370,4 +1353,387 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             System.out.println("Heartbeat stopped during cleanup");
         }
     }
+
+    // ======================================================================
+    // SyncAgent callbacks (Pending gate -> user accept)
+    // ======================================================================
+
+    @Override
+    public void onPendingChangeProposed(SyncAgent.PendingChange change) {
+        // Hỏi user accept ngay (local giống remote)
+        Platform.runLater(() -> {
+            Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+            alert.setTitle(change.title);
+            alert.setHeaderText(null);
+            alert.setContentText(change.message);
+
+            ButtonType acceptBtn = new ButtonType("Accept", ButtonBar.ButtonData.OK_DONE);
+            ButtonType rejectBtn = new ButtonType("Reject", ButtonBar.ButtonData.CANCEL_CLOSE);
+            alert.getButtonTypes().setAll(acceptBtn, rejectBtn);
+
+            alert.showAndWait().ifPresent(result -> {
+                if (result == acceptBtn) {
+                    syncAgent.acceptPending(change.id);
+                } else {
+                    syncAgent.dismissPending(change.id);
+                }
+            });
+        });
+    }
+
+    @Override
+    public void onLocalPendingAccepted(SyncAgent.PendingChange change) {
+        try {
+            java.nio.file.Path syncRoot = java.nio.file.Paths.get(syncDirectoryPath).toAbsolutePath().normalize();
+            java.nio.file.Path abs = syncRoot.resolve(change.relativePath).normalize();
+
+            // Handle DELETE operation
+            if (change.localType == SyncAgent.LocalChangeType.DELETE) {
+                handleLocalDelete(change.relativePath, change.isDirectory);
+                return;
+            }
+
+            // Handle FOLDER creation
+            if (change.isDirectory) {
+                handleLocalFolderChange(change.relativePath, abs);
+                return;
+            }
+
+            // Handle FILE upload
+            if (!abs.toFile().exists()) {
+                Platform.runLater(() ->
+                    mainView.setStatusMessage("❌ File không tồn tại: " + change.relativePath)
+                );
+                return;
+            }
+
+            // Find target folder ID from relativePath
+            int targetFolderId = findFolderIdFromRelativePath(change.relativePath);
+
+            System.out.println("📤 Uploading file: " + change.relativePath + " to folderId: " + targetFolderId);
+
+            uploadManager.uploadFile(abs.toFile(), String.valueOf(targetFolderId), (file, newFileItem, success, message) ->
+                Platform.runLater(() -> {
+                    if (success) {
+                        mainView.setStatusMessage("✅ Đã upload: " + change.relativePath);
+                        // Refresh if viewing the target folder
+                        if (currentFolderId == targetFolderId && currentFolderId > 0) {
+                            loadDirectoryFiles(currentFolderId);
+                        }
+                    } else {
+                        mainView.setStatusMessage("❌ Upload thất bại: " + message);
+                    }
+                })
+            );
+
+        } catch (Exception e) {
+            onError("Lỗi xử lý local accepted", e);
+        }
+    }
+
+    /**
+     * Handle local folder creation/modification
+     */
+    private void handleLocalFolderChange(String relativePath, java.nio.file.Path absPath) {
+        try {
+            // Parse folder path to find parent folder ID
+            String[] parts = relativePath.split("/");
+            String folderName = parts[parts.length - 1];
+
+            // Find parent folder ID
+            int parentFolderId = 1; // default to root
+            if (parts.length > 1) {
+                String parentPath = String.join("/", java.util.Arrays.copyOf(parts, parts.length - 1));
+                parentFolderId = findFolderIdFromRelativePath(parentPath);
+            }
+
+            // Create folder on server using TaskWrapper for async execution
+            final int finalParentId = parentFolderId;
+            final String finalFolderName = folderName;
+
+            TaskWrapper.executeAsync(
+                "Đang tạo thư mục: " + folderName,
+                () -> {
+                    try {
+                        return folderService.createFolder(finalFolderName, finalParentId);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
+                (Response response) -> {
+                    if (response != null && "success".equals(response.getStatus())) {
+                        mainView.setStatusMessage("✅ Đã tạo thư mục: " + relativePath);
+                        // Refresh tree if viewing the parent folder
+                        if (currentFolderId == finalParentId) {
+                            handleRefresh();
+                        }
+                    } else {
+                        String errorMsg = response != null ? response.getMessage() : "Unknown error";
+                        mainView.setStatusMessage("❌ Tạo thư mục thất bại: " + errorMsg);
+                    }
+                },
+                (String error) -> {
+                    mainView.setStatusMessage("❌ Lỗi tạo thư mục: " + error);
+                },
+                mainView
+            );
+
+        } catch (Exception e) {
+            Platform.runLater(() ->
+                mainView.setStatusMessage("❌ Lỗi xử lý folder: " + e.getMessage())
+            );
+        }
+    }
+
+    /**
+     * Handle local file/folder deletion
+     */
+    private void handleLocalDelete(String relativePath, boolean isDirectory) {
+        try {
+            // TODO: Implement actual server-side deletion
+            // For now, just show notification
+            Platform.runLater(() ->
+                mainView.setStatusMessage("🗑️ Đã phát hiện xóa " +
+                    (isDirectory ? "thư mục" : "file") + ": " + relativePath +
+                    " (Cần implement server delete API)")
+            );
+
+            // Refresh current view
+            if (currentFolderId > 0) {
+                Platform.runLater(() -> loadDirectoryFiles(currentFolderId));
+            }
+
+        } catch (Exception e) {
+            onError("Lỗi xử lý delete", e);
+        }
+    }
+
+    /**
+     * Find folder ID from relative path by querying local database
+     * Returns root folder ID (1) if path not found or on error
+     */
+    private int findFolderIdFromRelativePath(String relativePath) {
+        if (relativePath == null || relativePath.isEmpty()) {
+            return 1; // root
+        }
+
+        try {
+            // Extract parent path from file path
+            String folderPath;
+            if (relativePath.contains("/")) {
+                int lastSlash = relativePath.lastIndexOf('/');
+                folderPath = relativePath.substring(0, lastSlash);
+            } else {
+                return 1; // file in root
+            }
+
+            // Query local database for folder ID
+            try (java.sql.Connection conn = LocalDatabaseManager.getInstance().getConnection();
+                 java.sql.PreparedStatement ps = conn.prepareStatement(
+                     "SELECT ServerFolderID FROM Folders WHERE LocalPath = ? LIMIT 1")) {
+                ps.setString(1, folderPath);
+                java.sql.ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    int folderId = rs.getInt("ServerFolderID");
+                    System.out.println("  Found folderId=" + folderId + " for path: " + folderPath);
+                    return folderId;
+                }
+            }
+
+            // If not found, try to find by folder name only
+            String[] parts = folderPath.split("/");
+            String folderName = parts[parts.length - 1];
+
+            try (java.sql.Connection conn = LocalDatabaseManager.getInstance().getConnection();
+                 java.sql.PreparedStatement ps = conn.prepareStatement(
+                     "SELECT ServerFolderID FROM Folders WHERE FolderName = ? LIMIT 1")) {
+                ps.setString(1, folderName);
+                java.sql.ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    int folderId = rs.getInt("ServerFolderID");
+                    System.out.println("  Found folderId=" + folderId + " by name: " + folderName);
+                    return folderId;
+                }
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error finding folder ID for path: " + relativePath + " - " + e.getMessage());
+        }
+
+        System.out.println("  Folder not found, using root (1) for: " + relativePath);
+        return 1; // fallback to root
+    }
+
+    @Override
+    public void onRemotePendingAccepted(SyncAgent.PendingChange change) {
+        if (change.remoteChanges == null || change.remoteChanges.isEmpty()) return;
+
+        java.nio.file.Path syncRoot = java.nio.file.Paths.get(syncDirectoryPath).toAbsolutePath().normalize();
+        int n = change.getRemoteChangeCount();
+
+        Platform.runLater(() -> mainView.setStatusMessage("⬇️ Đang áp dụng " + n + " thay đổi từ server..."));
+
+        // Apply changes in muted mode to avoid triggering file watcher
+        syncAgent.runMuted(() -> {
+            int successCount = 0;
+            int errorCount = 0;
+
+            for (JsonElement el : change.remoteChanges) {
+                if (!el.isJsonObject()) continue;
+                JsonObject obj = el.getAsJsonObject();
+
+                try {
+                    // Parse change event structure from server
+                    // Structure: { "Seq": 16, "type": "FILE_CREATE", "data": { "EntityId": 8, "Name": "...", "FolderID": 1, ... } }
+
+                    String changeType = pickString(obj, "type", "action", "op", "changeType");
+                    JsonObject data = obj.has("data") && obj.get("data").isJsonObject()
+                        ? obj.getAsJsonObject("data")
+                        : obj;
+
+                    // Extract file/folder info from data object
+                    Integer entityId = pickInt(data, "EntityId", "entityId", "FileID", "fileId", "id");
+                    String name = pickString(data, "Name", "name", "FileName", "fileName");
+                    Integer folderId = pickInt(data, "FolderID", "folderId", "ParentFolderID", "parentFolderId");
+
+                    // Determine if it's a folder or file
+                    boolean isDir = changeType != null && changeType.toUpperCase().contains("FOLDER");
+
+                    if (name == null || name.trim().isEmpty()) {
+                        System.err.println("⚠️ Remote change missing Name: " + obj);
+                        errorCount++;
+                        continue;
+                    }
+
+                    // Build relativePath from FolderID + Name
+                    String relPath = buildRelativePathFromFolderId(folderId != null ? folderId : 1, name);
+
+                    System.out.println("📥 Processing remote change: type=" + changeType + ", name=" + name +
+                                       ", folderId=" + folderId + ", entityId=" + entityId +
+                                       ", relativePath=" + relPath);
+
+                    java.nio.file.Path target = syncRoot.resolve(relPath).normalize();
+
+                    // Handle DELETE
+                    if (changeType != null && (changeType.toUpperCase().contains("DELETE") ||
+                                                changeType.toUpperCase().contains("REMOVE"))) {
+                        if (java.nio.file.Files.deleteIfExists(target)) {
+                            System.out.println("🗑️ Deleted: " + relPath);
+                            successCount++;
+                        }
+                        continue;
+                    }
+
+                    // Handle FOLDER creation
+                    if (isDir) {
+                        java.nio.file.Files.createDirectories(target);
+                        System.out.println("📁 Created folder: " + relPath);
+                        successCount++;
+                        continue;
+                    }
+
+                    // Handle FILE download
+                    if (entityId != null) {
+                        downloadService.downloadAndSaveFile(entityId, target);
+                        System.out.println("⬇️ Downloaded: " + relPath);
+                        successCount++;
+                    } else {
+                        System.err.println("⚠️ Remote file change missing EntityId: " + name);
+                        errorCount++;
+                    }
+
+                } catch (Exception ex) {
+                    System.err.println("❌ Error applying remote change: " + ex.getMessage());
+                    ex.printStackTrace();
+                    errorCount++;
+                }
+            }
+
+            final int finalSuccess = successCount;
+            final int finalError = errorCount;
+
+            // Update sinceSeq after applying changes
+            try {
+                LocalDatabaseManager.getInstance().setSinceSeq(change.remoteLastSeq);
+            } catch (Exception ignored) {}
+
+            // Update UI
+            Platform.runLater(() -> {
+                mainView.setStatusMessage(String.format(
+                    "✅ Hoàn thành: %d thành công, %d lỗi (sinceSeq → %d)",
+                    finalSuccess, finalError, change.remoteLastSeq
+                ));
+
+                // Refresh current view to show changes
+                if (currentFolderId > 0) {
+                    loadDirectoryFiles(currentFolderId);
+                }
+            });
+        });
+    }
+
+    /**
+     * Build relative path from FolderID + file/folder name
+     * Queries local database to find folder path
+     */
+    private String buildRelativePathFromFolderId(int folderId, String name) {
+        try {
+            // Get folder path from local database
+            String folderPath = "";
+
+            if (folderId > 1) { // Skip root folder
+                try (java.sql.Connection conn = LocalDatabaseManager.getInstance().getConnection();
+                     java.sql.PreparedStatement ps = conn.prepareStatement(
+                         "SELECT LocalPath FROM Folders WHERE ServerFolderID = ? LIMIT 1")) {
+                    ps.setInt(1, folderId);
+                    java.sql.ResultSet rs = ps.executeQuery();
+                    if (rs.next()) {
+                        folderPath = rs.getString("LocalPath");
+                        if (folderPath != null && !folderPath.isEmpty()) {
+                            return folderPath + "/" + name;
+                        }
+                    }
+                }
+            }
+
+            // If folder not found or is root, just use name
+            return name;
+
+        } catch (Exception e) {
+            System.err.println("⚠️ Error building path from folderId=" + folderId + ": " + e.getMessage());
+            return name; // fallback to just name
+        }
+    }
+
+    private static String pickString(JsonObject obj, String... keys) {
+        for (String k : keys) {
+            if (obj.has(k) && !obj.get(k).isJsonNull()) {
+                try { return obj.get(k).getAsString(); }
+                catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private static Integer pickInt(JsonObject obj, String... keys) {
+        for (String k : keys) {
+            if (obj.has(k) && !obj.get(k).isJsonNull()) {
+                try { return obj.get(k).getAsInt(); }
+                catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private static Boolean pickBoolean(JsonObject obj, String... keys) {
+        for (String k : keys) {
+            if (obj.has(k) && !obj.get(k).isJsonNull()) {
+                try { return obj.get(k).getAsBoolean(); }
+                catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
 }
+

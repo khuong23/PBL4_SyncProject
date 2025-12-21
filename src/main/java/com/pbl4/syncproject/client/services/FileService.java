@@ -297,6 +297,11 @@ public class FileService {
                 System.out.println("⚠️ Folder " + name + " không có field 'hasChildren' trong JSON!");
             }
 
+            // Filter out Root folder (ID=1) to prevent it appearing as a child of itself
+            if (folder.getFolderId() == 1) {
+                return null;
+            }
+
             return folder;
 
         } catch (Exception e) {
@@ -738,3 +743,4 @@ public class FileService {
         }
     }
 }
+

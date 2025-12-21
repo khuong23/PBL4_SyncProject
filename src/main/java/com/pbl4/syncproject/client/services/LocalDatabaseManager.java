@@ -158,9 +158,7 @@ public class LocalDatabaseManager {
             st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_serverid    ON Files(ServerFileID);");
             st.execute("CREATE        INDEX IF NOT EXISTS idx_files_folder      ON Files(FolderID);");
             st.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_files_folder_name ON Files(FolderID, FileName);");
-            
-            // GIẢI PHÁP B: LUÔN TẠO LẠI ROOT FOLDER SAU KHI RESET
-            // Đảm bảo root folder (ServerFolderID=1) luôn tồn tại
+            // Tạo thư mục gốc nếu chưa có
             st.execute("""
                 INSERT OR IGNORE INTO Folders (FolderID, ServerFolderID, ParentFolderID, FolderName, LocalPath, SyncStatus)
                 VALUES (1, 1, NULL, 'Root', '', 'SYNCED')

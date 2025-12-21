@@ -22,6 +22,8 @@ public class FileWatcherService {
 
     private WatchService watchService;
     private final Map<WatchKey, Path> keyToPathMap = new ConcurrentHashMap<>();
+    private final Map<Path, Boolean> lastKnownIsDir = new ConcurrentHashMap<>();
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "FileWatcher-Thread");
         t.setDaemon(true);
@@ -46,6 +48,10 @@ public class FileWatcherService {
         void onFileCreated(Path filePath);
         void onFileModified(Path filePath);
         void onFileDeleted(Path filePath);
+
+        void onDirectoryCreated(Path dirPath);
+        void onDirectoryDeleted(Path dirPath);
+        void onDirectoryRenamed(Path oldDirPath, Path newDirPath);
 
         /** Mặc định: bỏ qua; caller có thể override để rescan nhẹ */
         default void onOverflow(Path watchedDirectory) {}
@@ -80,6 +86,7 @@ public class FileWatcherService {
         }
         executor.shutdownNow();
         keyToPathMap.clear();
+        lastKnownIsDir.clear();
         removeShutdownHook();
         System.out.println("FileWatcher service stopped");
     }
@@ -177,14 +184,17 @@ public class FileWatcherService {
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 if (shouldIgnoreDirectory(dir)) return FileVisitResult.SKIP_SUBTREE;
                 registerDirectory(dir);
+                lastKnownIsDir.put(dir.toAbsolutePath().normalize(), true);
                 return FileVisitResult.CONTINUE;
             }
         });
     }
 
     private void registerDirectory(Path directory) throws IOException {
-        WatchKey key = directory.register(watchService, ENTRY_CREATE, ENTRY_MODIFY, ENTRY_DELETE);
-        keyToPathMap.put(key, directory);
+        Path dir = directory.toAbsolutePath().normalize();
+        WatchKey key = dir.register(watchService, ENTRY_CREATE, ENTRY_MODIFY, ENTRY_DELETE);
+        keyToPathMap.put(key, dir);
+        lastKnownIsDir.put(dir, true);
     }
 
     private void watchLoop() {
@@ -216,20 +226,6 @@ public class FileWatcherService {
                     WatchEvent<Path> pathEvent = (WatchEvent<Path>) event;
                     Path child = pathEvent.context();
                     Path fullPath = directory.resolve(child);
-
-                    // Nếu tạo thư mục mới → phải đăng ký ngay (để theo dõi sâu)
-                    if (kind == ENTRY_CREATE) {
-                        try {
-                            if (Files.isDirectory(fullPath)) {
-                                if (!shouldIgnoreDirectory(fullPath)) {
-                                    registerRecursive(fullPath);
-                                }
-                            }
-                        } catch (IOException e) {
-                            System.err.println("Error registering new directory: " + e.getMessage());
-                        }
-                    }
-
                     // Phát sự kiện
                     handleFileEvent(kind, fullPath);
                 }
@@ -254,34 +250,79 @@ public class FileWatcherService {
         }
     }
 
-    private void handleFileEvent(WatchEvent.Kind<?> kind, Path filePath) {
+    private void handleFileEvent(WatchEvent.Kind<?> kind, Path fullPath) {
         if (!isRunning.get()) return;
-        
-        // KIỂM TRA PAUSED FLAG
+
+        // muted/pause => bỏ qua toàn bộ event để tránh loop khi agent đang ghi file
         if (paused.get()) {
-            System.out.println("🔇 File event IGNORED (watcher muted): " + kind.name() + " - " + filePath);
+            System.out.println("🔇 FS event IGNORED (watcher muted): " + kind.name() + " - " + fullPath);
             return;
         }
 
-        // Bỏ qua một số file/dir theo tên và theo glob
-        if (shouldIgnore(filePath)) return;
+        // Xác định dir/file chắc chắn (DELETE cần cache vì path không còn tồn tại)
+        Path abs = fullPath.toAbsolutePath().normalize();
+        boolean isDir;
+        if (kind == ENTRY_DELETE) {
+            isDir = Boolean.TRUE.equals(lastKnownIsDir.get(abs));
+        } else {
+            isDir = Files.isDirectory(abs, LinkOption.NOFOLLOW_LINKS);
+            lastKnownIsDir.put(abs, isDir);
+        }
+
+        // Bỏ qua theo ignore rules
+        if (isDir) {
+            if (shouldIgnoreDirectory(abs)) return;
+        } else {
+            if (shouldIgnore(abs)) return;
+        }
 
         // Log gọn
-        System.out.println("File event: " + kind.name() + " - " + filePath);
+        System.out.println("FS event: " + kind.name() + " - " + abs);
 
-        // Gửi tới listener
+        // Nếu tạo thư mục mới -> register đệ quy để bắt event bên trong
+        if (kind == ENTRY_CREATE && isDir) {
+            try {
+                registerRecursive(abs);
+            } catch (IOException e) {
+                // best effort
+                System.err.println("Failed to register new directory: " + abs + " - " + e.getMessage());
+            }
+        }
+
+        // Dispatch directory events
+        if (isDir) {
+            if (kind == ENTRY_CREATE) {
+                for (FileChangeListener l : listeners) {
+                    try { l.onDirectoryCreated(abs); }
+                    catch (Exception ex) { System.err.println("Error in directory create listener: " + ex.getMessage()); }
+                }
+            } else if (kind == ENTRY_DELETE) {
+                for (FileChangeListener l : listeners) {
+                    try { l.onDirectoryDeleted(abs); }
+                    catch (Exception ex) { System.err.println("Error in directory delete listener: " + ex.getMessage()); }
+                }
+                lastKnownIsDir.remove(abs);
+            }
+            return;
+        }
+
+        // Dispatch file events
         for (FileChangeListener l : listeners) {
             try {
                 if (kind == ENTRY_CREATE) {
-                    l.onFileCreated(filePath);
+                    l.onFileCreated(abs);
                 } else if (kind == ENTRY_MODIFY) {
-                    l.onFileModified(filePath);
+                    l.onFileModified(abs);
                 } else if (kind == ENTRY_DELETE) {
-                    l.onFileDeleted(filePath);
+                    l.onFileDeleted(abs);
                 }
             } catch (Exception ex) {
                 System.err.println("Error in file change listener: " + ex.getMessage());
             }
+        }
+
+        if (kind == ENTRY_DELETE) {
+            lastKnownIsDir.remove(abs);
         }
     }
 
