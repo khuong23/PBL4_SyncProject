@@ -696,6 +696,20 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             System.err.println("File không tồn tại, bỏ task: " + task.localPath);
             return true;
         }
+
+        // ============== LOOP BREAKER: Tính hash hiện tại của file ==============
+        // Đây là bước QUAN TRỌNG để phá vòng lặp upload-download vô hạn
+        String currentFileHash = null;
+        try {
+            currentFileHash = hashService.calculateFileHash(fileToUpload);
+            System.out.println("🔑 [LOOP BREAKER] Current file hash: " +
+                (currentFileHash != null ? currentFileHash.substring(0, Math.min(16, currentFileHash.length())) + "..." : "null"));
+        } catch (Exception e) {
+            System.err.println("⚠️ Không thể tính hash file: " + e.getMessage());
+            // Tiếp tục upload, nhưng không có cơ chế phát hiện loop
+        }
+        // ========================================================================
+
         int folderId = 1;
         Integer baseVersion = null;
         String lastKnownHash = null;
@@ -778,6 +792,42 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 e.printStackTrace();
             }
         }
+
+        // ============== LOOP BREAKER: So sánh hash để phát hiện vòng lặp ==============
+        // Nếu hash hiện tại GIỐNG HỆT hash trong DB (lastKnownHash), nghĩa là:
+        // - File này ĐÃ được đồng bộ (DownloadService vừa tải về và cập nhật DB)
+        // - FileWatcher phát hiện thay đổi và tạo upload task (nhầm lẫn!)
+        // → HỦY UPLOAD để tránh vòng lặp vô hạn
+        if (currentFileHash != null && lastKnownHash != null && currentFileHash.equals(lastKnownHash)) {
+            System.out.println("🛑🛑🛑 [LOOP DETECTED] File hash khớp với DB - HỦY UPLOAD để tránh vòng lặp!");
+            System.out.println("   File: " + task.localPath);
+            System.out.println("   Current Hash: " + currentFileHash.substring(0, 16) + "...");
+            System.out.println("   DB Hash:      " + lastKnownHash.substring(0, 16) + "...");
+            System.out.println("   → File này đã được đồng bộ, không cần upload lại.");
+
+            // Cập nhật trạng thái về SYNCED để UI hiển thị đúng
+            try (Connection conn = localDbManager.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE Files SET SyncStatus=? WHERE LocalPath=?")) {
+                ps.setString(1, LocalDatabaseManager.STATUS_SYNCED);
+                ps.setString(2, task.localPath);
+                ps.executeUpdate();
+                System.out.println("   ✅ Đã cập nhật trạng thái → SYNCED");
+            } catch (SQLException e) {
+                System.err.println("   ⚠️ Lỗi cập nhật trạng thái: " + e.getMessage());
+            }
+
+            // Trả về TRUE để xóa task khỏi queue (coi như "thành công")
+            return true;
+        }
+
+        // Hash KHÁC NHAU → Đây là thay đổi thật sự, tiến hành upload
+        if (currentFileHash != null && lastKnownHash != null) {
+            System.out.println("✅ [LOOP BREAKER] Hash khác nhau - Đây là thay đổi thật:");
+            System.out.println("   Current: " + currentFileHash.substring(0, 16) + "...");
+            System.out.println("   DB:      " + lastKnownHash.substring(0, 16) + "...");
+        }
+        // ================================================================================
 
         System.out.println("📤 [UPLOAD] File: " + fileToUpload.getName() + ", FolderId: " + folderId + ", BaseVersion: " + baseVersion);
         

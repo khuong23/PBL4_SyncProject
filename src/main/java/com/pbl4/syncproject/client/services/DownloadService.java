@@ -4,12 +4,12 @@ import com.google.gson.JsonObject;
 import com.pbl4.syncproject.client.models.FileItem;
 import com.pbl4.syncproject.common.jsonhandler.Response;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
 import java.util.Base64;
 
 /**
@@ -20,7 +20,6 @@ public class DownloadService {
     private final NetworkService networkService;
     private final LocalDatabaseManager localDbManager;
     private final String syncDirectoryPath; // ví dụ: C:\SyncData
-    private final FileHashService fileHashService; // Thêm để tính hash
     private final FileWatcherService fileWatcher; // Thêm để pause khi ghi file
     private final FolderService folderService; // Thêm để re-sync folder tree khi cần
 
@@ -28,7 +27,6 @@ public class DownloadService {
         this.networkService = networkService;
         this.localDbManager = localDbManager;
         this.syncDirectoryPath = syncDirectoryPath;
-        this.fileHashService = new FileHashService(); // Khởi tạo
         this.fileWatcher = fileWatcher; // Lưu reference
         this.folderService = folderService; // Lưu reference
     }
@@ -64,14 +62,19 @@ public class DownloadService {
 
         byte[] fileBytes = Base64.getDecoder().decode(base64Content);
         
+        // --- TỐI ƯU: Tính Hash ngay lập tức từ byte[] trong RAM ---
+        // Giúp tránh việc phải đọc lại file từ đĩa, và đảm bảo hash khớp tuyệt đối với nội dung tải về
+        String calculatedHash = calculateSha256(fileBytes);
+        // ----------------------------------------------------------
+        
         // 3. LẤY LOCAL FOLDER ID (DỰA TRÊN DỮ LIỆU TỪ API)
         Integer localFolderId = localDbManager.getLocalFolderIdByServerId(serverFolderId);
         
         if (localFolderId == null) {
             System.err.println("⚠️ Không tìm thấy mapping local cho ServerFolderID=" + serverFolderId + " (cho file " + originalFileName + "). Thử đồng bộ folder tree...");
-            // FIX: Thử re-sync cây thư mục với LocalDatabaseManager
+            // Thử re-sync cây thư mục
             try {
-                folderService.syncFolderTreeFromServer(localDbManager);
+                folderService.syncFolderTreeFromServer();
             } catch (Exception e) {
                 System.err.println("Lỗi khi re-sync folder tree: " + e.getMessage());
             }
@@ -118,55 +121,50 @@ public class DownloadService {
             }
         });
         
-        // 6. CẬP NHẬT CACHE SAU KHI GHI FILE (với localFolderId từ response API)
-        updateFileCacheAfterDownload(fileItem, localDestination.toString(), serverHash, serverVersion, localFolderId);
+        // 6. CẬP NHẬT CACHE SAU KHI GHI FILE (với hash đã tính từ RAM)
+        long fileSize = fileBytes.length;
+        updateFileCacheInMemory(fileItem.getFileId(), localFolderId, fileName, fileSize, relativePath, calculatedHash, serverVersion);
 
-        System.out.println("Đã ghi file thành công: " + localDestination);
+        System.out.println("✅ Đã ghi file và cập nhật cache: " + localDestination);
     }
 
-    private void updateFileCacheAfterDownload(FileItem item, String localPath, String serverHash, int serverVersion, int localFolderId) throws Exception {
-        // Nhận localFolderId từ tham số (đã được xác minh trước khi gọi hàm này)
-        
-        // --- LỖI ĐÃ SỬA: Tính hash của file vừa tải và lấy thông tin chính xác ---
-        File downloadedFile = new File(localPath);
-        String currentHash = fileHashService.calculateFileHash(downloadedFile);
-        long fileSize = downloadedFile.length();
-        
-        // Lấy tên file gốc (loại bỏ icon nếu có)
-        String originalName = item.getFileName();
-        if (originalName.contains(" ")) {
-            originalName = originalName.substring(originalName.indexOf(' ') + 1).trim();
+    private void updateFileCacheInMemory(int serverFileId, int localFolderId, String fileName, long fileSize, String relativePath, String hash, int version) {
+        try {
+            // Chuẩn hóa path
+            String normalizedPath = relativePath.replace("\\", "/");
+
+            System.out.println("🔍 [DOWNLOAD CACHE] Update: " + normalizedPath + " | Hash: " + hash + " | Ver: " + version);
+
+            localDbManager.upsertDownloadedFile(
+                    serverFileId,
+                    localFolderId,
+                    fileName,
+                    fileSize,
+                    normalizedPath,
+                    hash,     // Sử dụng hash tính từ RAM
+                    version
+            );
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi cập nhật cache sau download: " + e.getMessage());
+            e.printStackTrace();
         }
-        
-        // Chuẩn hóa đường dẫn (dùng /) - PHẢI dùng relativePath từ item
-        String relativePath = item.getRelativePath();
-        if (relativePath == null || relativePath.isEmpty()) {
-            // Fallback: Tính relative path từ absolute path
-            Path syncDir = Paths.get(syncDirectoryPath);
-            Path filePath = Paths.get(localPath);
-            relativePath = syncDir.relativize(filePath).toString().replace("\\", "/");
-        } else {
-            // Đảm bảo dấu / thống nhất
-            relativePath = relativePath.replace("\\", "/");
+    }
+
+    /** Helper: Tính SHA-256 từ byte array */
+    private String calculateSha256(byte[] data) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            System.err.println("Lỗi tính hash: " + e.getMessage());
+            return "";
         }
-        
-        System.out.println("🔍 [DOWNLOAD DEBUG] LocalPath: " + localPath);
-        System.out.println("🔍 [DOWNLOAD DEBUG] RelativePath: " + relativePath);
-        System.out.println("🔍 [DOWNLOAD DEBUG] Hash: " + currentHash);
-        System.out.println("🔍 [DOWNLOAD DEBUG] Version: " + serverVersion);
-        
-        // GỌI HÀM UPSERT với VERSION (dùng overload 7 tham số)
-        localDbManager.upsertDownloadedFile(
-                item.getFileId(),     // ServerFileID
-                localFolderId,        // LocalFolderID
-                originalName,         // Tên file
-                fileSize,             // Kích thước chính xác
-                relativePath,         // Đường dẫn tương đối
-                currentHash,          // Hash vừa tính (không dùng serverHash)
-                serverVersion         // VERSION từ server
-        );
-        
-        System.out.println("✅ Đã cập nhật cache sau download: " + relativePath + " (v" + serverVersion + ")");
-        // --- KẾT THÚC SỬA LỖI ---
     }
 }
