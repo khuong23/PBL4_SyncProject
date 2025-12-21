@@ -35,6 +35,7 @@ public interface IMainView {
 
     // Directory Tree Methods
     void updateDirectoryTree();
+    void refreshCurrentTreeItem(); // Thêm phương thức này
     void selectDirectory(String directory);
     String getCurrentDirectory();
     com.pbl4.syncproject.common.model.Folders getSelectedFolder(); // Lấy thư mục đang chọn từ TreeView

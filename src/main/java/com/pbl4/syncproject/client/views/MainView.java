@@ -162,6 +162,40 @@ public class MainView implements IMainView {
     }
 
     /**
+     * Refresh chỉ item đang được chọn trong cây thư mục
+     */
+    @Override
+    public void refreshCurrentTreeItem() {
+        TreeItem<Folders> selectedItem = treeDirectory.getSelectionModel().getSelectedItem();
+
+        // Nếu không có item nào được chọn, refresh root (hoặc toàn bộ tree)
+        if (selectedItem == null) {
+            refreshFolderTree();
+            return;
+        }
+
+        System.out.println("🔄 Refreshing current tree item: " + selectedItem.getValue().getFolderName());
+
+        // Đánh dấu là chưa tải để force reload
+        loadedChildrenMap.put(selectedItem, false);
+
+        // Xóa hết con hiện tại
+        selectedItem.getChildren().clear();
+
+        // Thêm placeholder
+        addPlaceholderNode(selectedItem);
+
+        // Nếu đang expand thì trigger load lại ngay
+        if (selectedItem.isExpanded()) {
+            loadChildrenIfNeeded(selectedItem);
+        } else {
+            // Nếu đang collapse, thì khi user expand nó sẽ tự load lại (do đã set loaded=false)
+            // Tuy nhiên, để user biết có thay đổi, ta có thể expand nó luôn
+            selectedItem.setExpanded(true);
+        }
+    }
+
+    /**
      * Khởi tạo view và setup các components
      */
     private void initializeView() {

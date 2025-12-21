@@ -456,6 +456,11 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 }
             }
             System.out.println("[SyncAgent] QUEUED CREATE_FOLDER: " + sqlPath + " (parentSrv=" + parentServerId + ")");
+
+            // Kích hoạt xử lý hàng đợi ngay lập tức
+            triggerSyncQueue();
+            if (eventListener != null) eventListener.onLocalChangeDetected();
+
         } catch (Exception e) {
             System.err.println("Lỗi xử lý thư mục: " + e.getMessage());
         }
@@ -1086,6 +1091,9 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             // Tải đệ quy từ root
             syncFolderTreeRecursive(null, processedFolders);
             
+            // CLEANUP: Xóa các folder local không còn trên server
+            cleanupOrphanedFolders(processedFolders);
+
             System.out.println("✅ Đã đồng bộ " + processedFolders.size() + " thư mục từ server");
             
         } catch (Exception e) {
@@ -1093,7 +1101,73 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             e.printStackTrace();
         }
     }
-    
+
+    /**
+     * Xóa các folder trong local DB mà không có trong danh sách folders từ server
+     * @param serverFolderIds Set chứa tất cả ServerFolderID hợp lệ từ server
+     */
+    private void cleanupOrphanedFolders(java.util.Set<Integer> serverFolderIds) {
+        try (Connection conn = localDbManager.getConnection()) {
+            // Lấy tất cả folders trong local DB (trừ root)
+            String selectSql = "SELECT FolderID, ServerFolderID, LocalPath FROM Folders WHERE ServerFolderID IS NOT NULL AND ServerFolderID != 1";
+            java.util.List<Integer> foldersToDelete = new java.util.ArrayList<>();
+            java.util.Map<Integer, String> folderPaths = new java.util.HashMap<>();
+
+            try (PreparedStatement ps = conn.prepareStatement(selectSql)) {
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    Integer localFolderId = rs.getInt("FolderID");
+                    Integer serverFolderId = rs.getInt("ServerFolderID");
+                    String localPath = rs.getString("LocalPath");
+
+                    // Nếu ServerFolderID không có trong danh sách từ server → cần xóa
+                    if (!serverFolderIds.contains(serverFolderId)) {
+                        foldersToDelete.add(localFolderId);
+                        folderPaths.put(localFolderId, localPath);
+                    }
+                }
+            }
+
+            // Xóa các folders không còn trên server
+            if (!foldersToDelete.isEmpty()) {
+                System.out.println("🗑️ Tìm thấy " + foldersToDelete.size() + " folder(s) cần xóa (không còn trên server)");
+
+                for (Integer folderId : foldersToDelete) {
+                    String localPath = folderPaths.get(folderId);
+
+                    // Xóa filesystem trước
+                    if (localPath != null && !localPath.isEmpty()) {
+                        Path folderPath = syncDirectory.resolve(localPath);
+                        if (Files.exists(folderPath)) {
+                            try {
+                                Files.walk(folderPath)
+                                    .sorted((a, b) -> -a.compareTo(b)) // file trước, folder sau
+                                    .forEach(p -> {
+                                        try { Files.deleteIfExists(p); } catch (Exception ignore) {}
+                                    });
+                                System.out.println("  🗑️ Đã xóa folder: " + localPath);
+                            } catch (Exception e) {
+                                System.err.println("  ⚠️ Lỗi xóa folder " + localPath + ": " + e.getMessage());
+                            }
+                        }
+                    }
+
+                    // Xóa khỏi DB (cascade sẽ xóa files liên quan)
+                    try (PreparedStatement ps = conn.prepareStatement("DELETE FROM Folders WHERE FolderID = ?")) {
+                        ps.setInt(1, folderId);
+                        ps.executeUpdate();
+                    }
+                }
+
+                System.out.println("✅ Đã cleanup " + foldersToDelete.size() + " folder(s) không còn trên server");
+            }
+
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi cleanup orphaned folders: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
     /**
      * Tải folder tree đệ quy từ server
      * @param parentId null để lấy root folders, hoặc ID của parent folder
@@ -1276,7 +1350,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         suppressWatcherEvents.set(true);
         try {
             long sinceSeq = getSinceSeqCompat();
-            
+
             // QUAN TRỌNG: Tải toàn bộ folder tree từ server TRƯỚC
             // để đảm bảo client biết tất cả các folder trước khi xử lý file changes
             syncFolderTreeFromServer();
@@ -1295,36 +1369,36 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             JsonArray changes = asArr(responseData.get("changes"));
             if (changes != null) {
                 System.out.println("🔽 Nhận " + changes.size() + " thay đổi từ server.");
-                
+
                 // Phân loại changes: folders trước, files sau để tránh lỗi foreign key
                 java.util.List<JsonObject> folderChanges = new java.util.ArrayList<>();
                 java.util.List<JsonObject> fileChanges = new java.util.ArrayList<>();
-                
+
                 for (JsonElement change : changes) {
                     JsonObject obj = asObj(change);
                     if (obj == null) continue;
                     String type = obj.has("type") ? obj.get("type").getAsString() : "";
-                    
+
                     if (type.startsWith("FOLDER_")) {
                         folderChanges.add(obj);
                     } else {
                         fileChanges.add(obj);
                     }
                 }
-                
+
                 // Xử lý folder changes trước - lặp nhiều lần để đảm bảo parent được tạo trước child
                 java.util.Set<Integer> processedFolders = new java.util.HashSet<>();
                 int maxRetries = Math.max(folderChanges.size() * 2, 10); // Tăng số lần retry
                 int retryCount = 0;
-                
+
                 System.out.println("📁 Bắt đầu xử lý " + folderChanges.size() + " folder changes...");
-                
+
                 while (!folderChanges.isEmpty() && retryCount < maxRetries) {
                     java.util.List<JsonObject> remainingFolders = new java.util.ArrayList<>();
                     int processedThisRound = 0;
-                    
+
                     System.out.println("🔄 Round " + (retryCount + 1) + ": Đang xử lý " + folderChanges.size() + " folders...");
-                    
+
                     for (JsonObject obj : folderChanges) {
                         try {
                             String type = obj.get("type").getAsString();
@@ -1341,7 +1415,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                             }
 
                             // Debug log
-                            System.out.println("  📂 Đang xử lý: FolderID=" + folderId + ", Name=" + folderName + 
+                            System.out.println("  📂 Đang xử lý: FolderID=" + folderId + ", Name=" + folderName +
                                              ", ParentID=" + parentId);
 
                             boolean success = false;
@@ -1375,12 +1449,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                             remainingFolders.add(obj);
                         }
                     }
-                    
+
                     folderChanges = remainingFolders;
                     retryCount++;
-                    
+
                     System.out.println("  ✅ Round " + retryCount + ": Đã xử lý " + processedThisRound + " folders, còn lại " + folderChanges.size());
-                    
+
                     // Nếu không có tiến triển trong round này, thoát để tránh vòng lặp vô hạn
                     if (processedThisRound == 0 && !folderChanges.isEmpty()) {
                         System.err.println("⚠️ Không thể xử lý " + folderChanges.size() + " folder(s) sau " + retryCount + " lần thử");
@@ -1397,12 +1471,12 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         break;
                     }
                 }
-                
+
                 System.out.println("✅ Hoàn thành xử lý folders. Đã xử lý: " + processedFolders.size() + " folders");
-                
+
                 // FIX RACE CONDITION: Sử dụng CountDownLatch để đợi tất cả downloads hoàn thành
                 final java.util.concurrent.CountDownLatch downloadLatch = new java.util.concurrent.CountDownLatch(fileChanges.size());
-                
+
                 // Sau đó xử lý file changes
                 for (JsonObject obj : fileChanges) {
                     try {
@@ -1412,7 +1486,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                             downloadLatch.countDown(); // Đếm xuống ngay cả khi skip
                             continue;
                         }
-                        
+
                         switch (type) {
                             case "FILE_MODIFIED":
                             case "FILE_CREATED":
@@ -1451,7 +1525,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         downloadLatch.countDown(); // Đếm xuống ngay cả khi có lỗi
                     }
                 }
-                
+
                 // ĐỢI tất cả downloads hoàn thành (timeout 60s)
                 try {
                     System.out.println("⏳ Đang đợi " + fileChanges.size() + " file downloads hoàn thành...");
@@ -1614,7 +1688,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
         }
     }
 
-    /** Server báo folder sửa/tạo mới → tạo local và cập nhật cache 
+    /** Server báo folder sửa/tạo mới → tạo local và cập nhật cache
      * @return true nếu thành công, false nếu parent chưa tồn tại */
     private boolean handleServerFolderUpdate(JsonObject data) {
         try {
@@ -1642,7 +1716,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         localParentId = rs.getInt("FolderID");
                     } else {
                         // Parent folder chưa tồn tại, trả về false để thử lại sau
-                        System.out.println("⏳ Tạm hoãn folder '" + folderName + "' (ServerID=" + serverFolderId + 
+                        System.out.println("⏳ Tạm hoãn folder '" + folderName + "' (ServerID=" + serverFolderId +
                                          ") vì parent folder (ServerID=" + serverParentId + ") chưa tồn tại trong local DB");
                         return false;
                     }
@@ -1667,7 +1741,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 ps.setString(5, LocalDatabaseManager.STATUS_SYNCED);
                 ps.executeUpdate();
             }
-            
+
             System.out.println("✅ Đã tạo folder: " + folderName + " (ServerID=" + serverFolderId + ")");
             return true;
         } catch (Exception e) {
@@ -1760,9 +1834,9 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                 conflictedPath = localFile.toPath().resolveSibling(conflictedName);
                 conflictNumber++;
             } while (Files.exists(conflictedPath));
-            
+
             System.out.println("🔄 [Conflict] Đổi tên: " + originalName + " → " + conflictedName);
-            
+
             // Đổi tên file trong chế độ muted để tránh FileWatcher phát hiện
             final Path sourcePath = localFile.toPath();
             final Path targetPath = conflictedPath;
@@ -1798,7 +1872,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             // Chạy down-sync ở thread riêng để không block thread xử lý queue hiện tại
             new Thread(this::triggerDownSync, "Conflict-Down-Sync-Thread").start();
             // ---------------------------------------------
-            
+
         } catch (Exception e) {
             System.err.println("Lỗi xử lý xung đột: " + e.getMessage());
             e.printStackTrace();

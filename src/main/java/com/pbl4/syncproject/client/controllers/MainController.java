@@ -562,6 +562,7 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     public void onLocalChangeDetected() {
         // Đánh thức sync queue (nếu chưa chạy)
         if (syncAgent != null) {
+            System.out.println("🔔 [MainController] Nhận tín hiệu thay đổi local, triggerSyncQueue()...");
             syncAgent.triggerSyncQueue();
         }
         // Chuyển sang UI thread để cập nhật giao diện
@@ -760,8 +761,8 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
     private void refresh() {
         System.out.println("🔄 Refresh button clicked - Reloading files for current folder...");
 
-        // FIX: Không reset folder tree để giữ vị trí người dùng đang chọn
-        // mainView.refreshFolderTree(); // <--- VÔ HIỆU HÓA DÒNG NÀY
+        // FIX: Refresh folder tree structure for current item
+        mainView.refreshCurrentTreeItem();
 
         // Tải lại danh sách tệp cho thư mục đang được chọn (nếu có)
         if (currentFolderId > 0) {
@@ -848,16 +849,43 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
             // không có selection thì coi như tạo ở root
         }
 
-        try {
-            if (parentId == null || parentId <= 0) {
-                networkService.createFolder(folderName);
-            }
-            else {
-                networkService.createFolder(folderName, parentId);
-            }
-        } catch (Exception e) {
-            mainView.setStatusMessage("Lỗi gửi yêu cầu tạo thư mục: " + e.getMessage());
-        }
+        // Capture parentId for lambda
+        final Integer finalParentId = parentId;
+        final String finalFolderName = folderName;
+
+        // Execute async to avoid blocking UI
+        TaskWrapper.executeAsync(
+            "Đang tạo thư mục...",
+            () -> {
+                if (finalParentId == null || finalParentId <= 0) {
+                    try {
+                        return networkService.createFolder(finalFolderName);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                } else {
+                    try {
+                        return networkService.createFolder(finalFolderName, finalParentId);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            },
+            (response) -> {
+                if ("success".equals(response.getStatus())) {
+                    mainView.setStatusMessage("✅ Đã tạo thư mục: " + finalFolderName);
+                    // Refresh tree to show new folder
+                    mainView.refreshCurrentTreeItem();
+                } else {
+                    mainView.showAlert("Lỗi", "Không thể tạo thư mục: " + response.getMessage(), IMainView.AlertType.ERROR);
+                }
+            },
+            (error) -> {
+                mainView.setStatusMessage("Lỗi gửi yêu cầu tạo thư mục: " + error);
+                mainView.showAlert("Lỗi", "Lỗi kết nối: " + error, IMainView.AlertType.ERROR);
+            },
+            mainView
+        );
     }
 
     /**

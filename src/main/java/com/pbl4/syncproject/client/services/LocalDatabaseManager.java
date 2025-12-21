@@ -151,7 +151,7 @@ public class LocalDatabaseManager {
                   ParentFolderID   INTEGER,
                   FolderName       TEXT NOT NULL,
                   LocalPath        TEXT,
-                  ServerVersion    INTEGER NOT NULL DEFAULT 0,
+                  ServerVersion    INTEGER NOT NULL DEFAULT 1,
                   SyncStatus       TEXT NOT NULL DEFAULT 'SYNCED',
                   FOREIGN KEY(ParentFolderID) REFERENCES Folders(FolderID) ON DELETE CASCADE
                 );
@@ -166,7 +166,7 @@ public class LocalDatabaseManager {
                   FileSize          INTEGER,
                   LocalPath         TEXT NOT NULL UNIQUE,
                   LastKnownHash     TEXT,
-                  LastKnownVersion  INTEGER NOT NULL DEFAULT 0,
+                  LastKnownVersion  INTEGER NOT NULL DEFAULT 1,
                   SyncStatus        TEXT NOT NULL DEFAULT 'SYNCED',
                   FOREIGN KEY(FolderID) REFERENCES Folders(FolderID) ON DELETE CASCADE
                 );
