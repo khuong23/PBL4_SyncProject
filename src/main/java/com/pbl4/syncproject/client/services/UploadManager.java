@@ -71,6 +71,12 @@ public class UploadManager {
                     // Map server folder id
                     int serverFolderId = Integer.parseInt(currentDirectory.trim());
 
+                    // =================== KIỂM TRA FILE LOCKING ===================
+                    updateMessage("Đang kiểm tra quyền truy cập file...");
+                    // Gọi hàm kiểm tra khóa file. Nếu file bị Word khóa, nó sẽ chờ ở đây.
+                    waitForFileReadability(file);
+                    // ============================================================
+
                     // Lấy baseline từ cache: hash + version (để gửi OCC)
                     Baseline base = findBaseline(serverFolderId, file.getName());
 
@@ -200,16 +206,16 @@ public class UploadManager {
             System.err.println("   NewVersion: " + newServerVersion);
             System.err.println("   NewHash: " + newServerHash);
             e.printStackTrace();
-            
+
             // Thông báo cho user về vấn đề này
-            Platform.runLater(() -> 
-                mainView.showAlert(
-                    "Cảnh báo Cache", 
-                    "Upload thành công nhưng không thể cập nhật cache local.\n" +
-                    "Lần upload tiếp theo có thể gặp lỗi xung đột.\n" +
-                    "Chi tiết lỗi: " + e.getMessage(), 
-                    IMainView.AlertType.WARNING
-                )
+            Platform.runLater(() ->
+                    mainView.showAlert(
+                            "Cảnh báo Cache",
+                            "Upload thành công nhưng không thể cập nhật cache local.\n" +
+                                    "Lần upload tiếp theo có thể gặp lỗi xung đột.\n" +
+                                    "Chi tiết lỗi: " + e.getMessage(),
+                            IMainView.AlertType.WARNING
+                    )
             );
         }
 
@@ -477,6 +483,45 @@ public class UploadManager {
                     message += "\n\nHướng dẫn:\n• Kiểm tra mạng\n• Thử lại sau ít phút";
         }
         mainView.showAlert(title, message, IMainView.AlertType.ERROR);
+    }
+
+    // ================= File Locking Handler =================
+
+    /**
+     * Kiểm tra xem file có thể đọc được không (xử lý File Locking trên Windows).
+     * Nếu file bị khóa bởi tiến trình khác (Word, Excel), thử lại vài lần trước khi bỏ cuộc.
+     */
+    private void waitForFileReadability(File file) throws Exception {
+        int maxLockRetries = 5; // Thử tối đa 5 lần
+        int sleepTime = 500;    // Chờ 0.5s mỗi lần
+
+        for (int i = 0; i < maxLockRetries; i++) {
+            // Thử mở luồng đọc. Trên Windows, nếu file bị lock, dòng này sẽ ném FileNotFoundException
+            try (java.io.FileInputStream fis = new java.io.FileInputStream(file)) {
+                // Nếu mở được nghĩa là file an toàn để upload -> thoát vòng lặp
+                return;
+            } catch (java.io.FileNotFoundException e) {
+                // Kiểm tra thông điệp lỗi đặc trưng của Windows
+                if (e.getMessage() != null && e.getMessage().contains("process cannot access")) {
+                    // File đang bị khóa
+                    if (i < maxLockRetries - 1) {
+                        // Chưa hết số lần thử -> thông báo và chờ
+                        System.out.println("⏳ File đang bận, thử lại (" + (i + 1) + ")...");
+                        Thread.sleep(sleepTime);
+                        sleepTime *= 2; // Tăng thời gian chờ (Exponential Backoff)
+                    } else {
+                        // Hết lượt thử -> ném ngoại lệ
+                        throw new Exception("File đang bị mở bởi ứng dụng khác (Word/Excel). Vui lòng đóng file và thử lại.");
+                    }
+                } else {
+                    // Lỗi không tìm thấy file thật sự
+                    throw e;
+                }
+            } catch (java.io.IOException e) {
+                // Các lỗi IO khác -> ném ra luôn
+                throw e;
+            }
+        }
     }
 
     // ================= Callback =================
