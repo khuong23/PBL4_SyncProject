@@ -1107,6 +1107,53 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
      * Delete file
      */
     private void deleteFile(FileItem fileItem) {
+        // Kiểm tra trạng thái file trước
+        String syncStatus = fileItem.getSyncStatus();
+
+        // Nếu file đã bị xóa ở local (LOCAL_DELETED), chỉ cần kích hoạt đồng bộ
+        if (LocalDatabaseManager.STATUS_LOCAL_DELETED.equals(syncStatus)) {
+            boolean confirmed = mainView.showConfirmDialog(
+                    "Xác nhận đồng bộ xóa",
+                    "File '" + fileItem.getFileName() + "' đã bị xóa ở local.\n" +
+                    "Bạn có muốn đồng bộ việc xóa này lên server không?"
+            );
+
+            if (confirmed) {
+                try {
+                    // Kích hoạt đồng bộ ngay lập tức
+                    if (syncAgent != null) {
+                        syncAgent.triggerSyncQueue();
+                        mainView.setStatusMessage("Đang đồng bộ việc xóa file lên server...");
+                        mainView.showAlert("Thông báo",
+                            "Đã kích hoạt đồng bộ. File sẽ được xóa trên server trong giây lát.",
+                            IMainView.AlertType.INFORMATION);
+
+                        // Làm mới danh sách file sau một khoảng thời gian ngắn
+                        new Thread(() -> {
+                            try {
+                                Thread.sleep(1000); // Đợi 1 giây để đồng bộ hoàn tất
+                                Platform.runLater(() -> {
+                                    if (currentFolderId > 0) {
+                                        loadDirectoryFiles(currentFolderId);
+                                    }
+                                });
+                            } catch (InterruptedException e) {
+                                e.printStackTrace();
+                            }
+                        }).start();
+                    } else {
+                        mainView.showAlert("Lỗi", "Không thể kích hoạt đồng bộ. SyncAgent chưa sẵn sàng.",
+                                IMainView.AlertType.ERROR);
+                    }
+                } catch (Exception e) {
+                    mainView.showAlert("Lỗi", "Lỗi khi kích hoạt đồng bộ: " + e.getMessage(),
+                            IMainView.AlertType.ERROR);
+                }
+            }
+            return;
+        }
+
+        // Nếu file vẫn tồn tại, xử lý xóa bình thường
         boolean confirmed = mainView.showConfirmDialog(
                 "Xác nhận xóa",
                 "Bạn có chắc chắn muốn xóa file: " + fileItem.getFileName() + "?"
@@ -1114,6 +1161,21 @@ public class MainController implements Initializable, SyncAgent.SyncEventListene
 
         if (confirmed) {
             try {
+                // Kiểm tra file có tồn tại trên máy không (nếu có relativePath)
+                String relativePath = fileItem.getRelativePath();
+                if (relativePath != null && !relativePath.isEmpty()) {
+                    String syncDirectory = settingsService.getSetting(SettingsService.KEY_SYNC_DIRECTORY, null);
+                    if (syncDirectory != null) {
+                        File localFile = new File(syncDirectory, relativePath);
+                        if (!localFile.exists()) {
+                            mainView.showAlert("Lỗi",
+                                "File đã bị xóa ở local. Vui lòng làm mới danh sách hoặc đồng bộ.",
+                                IMainView.AlertType.ERROR);
+                            return;
+                        }
+                    }
+                }
+
                 // Gọi NetworkService để xóa file trên server
                 Response response = fileService.deleteFile(
                         fileItem.getFileId(),

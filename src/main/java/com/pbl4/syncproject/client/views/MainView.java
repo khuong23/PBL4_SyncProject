@@ -257,15 +257,22 @@ public class MainView implements IMainView {
                             // File sửa (Vàng) hoặc Xung đột (Đỏ)
                             downloadBtn.setDisable(false); // Có thể tải về phiên bản server (để so sánh)
                             uploadBtn.setDisable(false);   // Có thể tải lên (ghi đè)
+                        } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_DELETED)) {
+                            // File đã xóa local (Cam nhạt) - đang chờ đồng bộ lên server
+                            downloadBtn.setDisable(true);  // Không thể tải xuống (đã xóa)
+                            uploadBtn.setDisable(false);   // Hiển thị nút để sync DELETE lên server
+                            uploadBtn.setText("🗑️↑");      // Đổi icon thành "xóa lên server"
                         } else {
                             // File đã đồng bộ (SYNCED)
                             downloadBtn.setDisable(false); // Có thể tải xuống
                             uploadBtn.setDisable(true);    // Không cần tải lên (đã đồng bộ)
+                            uploadBtn.setText("📤");       // Reset icon về upload bình thường
                         }
                     } else {
                         // Trạng thái không xác định (file từ server, mặc định)
                         downloadBtn.setDisable(false);
                         uploadBtn.setDisable(true);
+                        uploadBtn.setText("📤");
                     }
                     
                     // Nút xóa luôn bật (logic xóa sẽ hỏi lại sau)
@@ -300,6 +307,9 @@ public class MainView implements IMainView {
                         } else if (status.equals(LocalDatabaseManager.STATUS_CONFLICT)) {
                             // Trạng thái: Xung đột -> MÀU ĐỎ
                             setStyle("-fx-background-color: #f30c0cff;"); // Đỏ nhạt
+                        } else if (status.equals(LocalDatabaseManager.STATUS_LOCAL_DELETED)) {
+                            // Trạng thái: Đã xóa local, đang chờ sync -> MÀU CAM NHẠT
+                            setStyle("-fx-background-color: #fed7aa;"); // Cam/da cam nhạt
                         }
                         // Nếu là SYNCED hoặc khác, sẽ dùng style mặc định (không màu)
                     }

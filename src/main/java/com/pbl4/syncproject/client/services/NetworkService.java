@@ -333,21 +333,36 @@ public class NetworkService {
 
     // --------------------------- API FILE/FOLDER OPS (bổ sung) ---------------------------
 
-    public Response deleteFile(int fileId) throws Exception {
+    public Response deleteFile(int fileId, Integer baseVersion) throws Exception {
         validateServerAddress();
         JsonObject data = new JsonObject();
         data.addProperty("fileId", fileId);
+        if (baseVersion != null) data.addProperty("baseVersion", baseVersion);
         addUsernameToData(data);
         return sendRequest(new Request("DELETE_FILE", data));
     }
 
-    public Response deleteFolder(int folderId, boolean recursive) throws Exception {
+    public Response deleteFolder(int folderId, boolean recursive, Integer baseVersion) throws Exception {
         validateServerAddress();
         JsonObject data = new JsonObject();
         data.addProperty("folderId", folderId);
         data.addProperty("recursive", recursive);
+        if (baseVersion != null) data.addProperty("baseVersion", baseVersion);
         addUsernameToData(data);
         return sendRequest(new Request("DELETE_FOLDER", data));
+    }
+
+    public Response deleteFileByPath(String localPath) throws Exception {
+        validateServerAddress();
+        JsonObject data = new JsonObject();
+        data.addProperty("localPath", localPath);
+        addUsernameToData(data);
+        try {
+            return sendRequest(new Request("DELETE_FILE_BY_PATH", data));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new Response("error", "Lỗi khi gửi yêu cầu xoá file: " + e.getMessage(), null);
+        }
     }
 
     public Response renameFile(int fileId, String newName) throws Exception {

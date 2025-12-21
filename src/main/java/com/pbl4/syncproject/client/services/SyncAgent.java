@@ -465,22 +465,27 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     private void processDeletedEntity(Path filePath) {
         String relativePath = syncDirectory.relativize(filePath).toString();
         String sqlPath = relativePath.replace("\\", "/");
-        System.out.println("[Watcher] Delete: " + sqlPath);
+        System.out.println("[Watcher] Delete detected: " + sqlPath);
 
         try (Connection conn = localDbManager.getConnection()) {
-            // Xóa file
+            boolean handled = false;
+
+            // Kiểm tra xóa file
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT FileID FROM Files WHERE LocalPath=? AND SyncStatus!=?")) {
+                    "SELECT FileID, ServerFileID FROM Files WHERE LocalPath=? AND SyncStatus!=?")) {
                 ps.setString(1, sqlPath);
                 ps.setString(2, LocalDatabaseManager.STATUS_LOCAL_DELETED);
                 ResultSet rs = ps.executeQuery();
                 if (rs.next()) {
+                    // File có trong DB → xử lý bình thường
                     try (PreparedStatement upd = conn.prepareStatement(
                             "UPDATE Files SET SyncStatus=? WHERE LocalPath=?")) {
                         upd.setString(1, LocalDatabaseManager.STATUS_LOCAL_DELETED);
                         upd.setString(2, sqlPath);
                         upd.executeUpdate();
                     }
+
+                    // Enqueue DELETE_FILE (chống trùng)
                     try (PreparedStatement q = conn.prepareStatement(
                             "SELECT 1 FROM SyncQueue WHERE Action='DELETE_FILE' AND LocalPath=? LIMIT 1")) {
                         q.setString(1, sqlPath);
@@ -491,12 +496,73 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                                 ins.setString(1, sqlPath);
                                 ins.executeUpdate();
                             }
+                            System.out.println("[SyncAgent] ✓ LOCAL_DELETED + QUEUED DELETE_FILE: " + sqlPath);
+                        } else {
+                            System.out.println("[SyncAgent] ✓ LOCAL_DELETED (already queued): " + sqlPath);
                         }
                     }
-                    return;
+
+                    // Notify UI refresh
+                    if (eventListener != null) eventListener.onLocalChangeDetected();
+                    handled = true;
                 }
             }
-            // TODO: xử lý delete folder (tra theo Folders.LocalPath) nếu cần
+
+            if (handled) return;
+
+            // Kiểm tra xóa folder
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT FolderID, ServerFolderID FROM Folders WHERE LocalPath=? AND FolderID<>1 AND SyncStatus!=?")) {
+                ps.setString(1, sqlPath);
+                ps.setString(2, LocalDatabaseManager.STATUS_LOCAL_DELETED);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    // Folder có trong DB → xử lý bình thường
+                    try (PreparedStatement upd = conn.prepareStatement(
+                            "UPDATE Folders SET SyncStatus=? WHERE LocalPath=?")) {
+                        upd.setString(1, LocalDatabaseManager.STATUS_LOCAL_DELETED);
+                        upd.setString(2, sqlPath);
+                        upd.executeUpdate();
+                    }
+
+                    // Enqueue DELETE_FOLDER (chống trùng)
+                    try (PreparedStatement q = conn.prepareStatement(
+                            "SELECT 1 FROM SyncQueue WHERE Action='DELETE_FOLDER' AND LocalPath=? LIMIT 1")) {
+                        q.setString(1, sqlPath);
+                        ResultSet ex = q.executeQuery();
+                        if (!ex.next()) {
+                            try (PreparedStatement ins = conn.prepareStatement(
+                                    "INSERT INTO SyncQueue (Action, LocalPath) VALUES ('DELETE_FOLDER', ?)")) {
+                                ins.setString(1, sqlPath);
+                                ins.executeUpdate();
+                            }
+                            System.out.println("[SyncAgent] ✓ LOCAL_DELETED + QUEUED DELETE_FOLDER: " + sqlPath);
+                        } else {
+                            System.out.println("[SyncAgent] ✓ LOCAL_DELETED (already queued): " + sqlPath);
+                        }
+                    }
+
+                    // Notify UI refresh
+                    if (eventListener != null) eventListener.onLocalChangeDetected();
+                    handled = true;
+                }
+            }
+
+            if (!handled) {
+                // File/folder không có trong DB - có thể do:
+                // 1. File đang được download (chưa lưu DB kịp)
+                // 2. File được tạo local nhưng chưa scan vào DB
+                // 3. File được download từ server nhưng user xóa ngay trước khi cache được cập nhật
+
+                // GIẢI PHÁP: Đợi một chút rồi kiểm tra lại (debounce đã xử lý)
+                // Nếu sau debounce vẫn không có trong DB, bỏ qua (có thể là file tạm)
+
+                System.out.println("[SyncAgent] ℹ️ Deleted entity not in DB (might be temp file or just downloaded): " + sqlPath);
+                // Không cần enqueue vì:
+                // - Nếu file chưa từng sync lên server → không cần delete
+                // - Nếu file đang download → sẽ được tạo lại và user có thể xóa lần 2
+            }
+
         } catch (Exception e) {
             System.err.println("Lỗi xử lý delete: " + e.getMessage());
             e.printStackTrace();
@@ -546,6 +612,7 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                         case "CREATE_FOLDER": ok = handleCreateFolderTask(task); break;
                         case "UPLOAD":        ok = handleUploadTask(task); break;
                         case "DELETE_FILE":   ok = handleDeleteFileTask(task); break;
+                        case "DELETE_FOLDER": ok = handleDeleteFolderTask(task); break;
                         default:
                             System.out.println("⚠️ Chưa hỗ trợ action: " + task.action);
                             ok = true;
@@ -754,14 +821,18 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
             if (data == null || !data.has("folderId")) return false;
             int serverFolderId = data.get("folderId").getAsInt();
 
+            // Lấy version từ response (mặc định là 1 nếu không có)
+            int serverVersion = data.has("version") ? data.get("version").getAsInt() : 1;
+
             try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE Folders SET ServerFolderID=?, SyncStatus=? WHERE LocalPath=?")) {
+                    "UPDATE Folders SET ServerFolderID=?, ServerVersion=?, SyncStatus=? WHERE LocalPath=?")) {
                 ps.setInt(1, serverFolderId);
-                ps.setString(2, LocalDatabaseManager.STATUS_SYNCED);
-                ps.setString(3, task.localPath);
+                ps.setInt(2, serverVersion);
+                ps.setString(3, LocalDatabaseManager.STATUS_SYNCED);
+                ps.setString(4, task.localPath);
                 ps.executeUpdate();
             }
-            System.out.println("✅ Folder tạo trên server: id=" + serverFolderId);
+            System.out.println("✅ Folder tạo trên server: id=" + serverFolderId + ", version=" + serverVersion);
             return true;
 
         } else if ("error".equals(response.getStatus()) &&
@@ -782,11 +853,14 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     String nm = fo.has("folderName") ? fo.get("folderName").getAsString() : null;
                     if (task.targetName.equals(nm)) {
                         int existingId = fo.get("folderId").getAsInt();
+                        int existingVersion = fo.has("version") ? fo.get("version").getAsInt() : 1;
+
                         try (PreparedStatement ps = conn.prepareStatement(
-                                "UPDATE Folders SET ServerFolderID=?, SyncStatus=? WHERE LocalPath=?")) {
+                                "UPDATE Folders SET ServerFolderID=?, ServerVersion=?, SyncStatus=? WHERE LocalPath=?")) {
                             ps.setInt(1, existingId);
-                            ps.setString(2, LocalDatabaseManager.STATUS_SYNCED);
-                            ps.setString(3, task.localPath);
+                            ps.setInt(2, existingVersion);
+                            ps.setString(3, LocalDatabaseManager.STATUS_SYNCED);
+                            ps.setString(4, task.localPath);
                             ps.executeUpdate();
                         }
                         System.out.println("✅ Gán ServerFolderID=" + existingId + " cho folder đã tồn tại");
@@ -803,15 +877,138 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     }
 
     private boolean handleDeleteFileTask(SyncTask task) throws Exception {
-        // TODO: Gọi API delete-file server khi có
-        System.out.println("⚠️ DELETE_FILE chưa triển khai server; xóa local cache");
+        Integer serverFileId = null;
+        Integer baseVersion = null;
+
+        try (Connection conn = localDbManager.getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT ServerFileID, LastKnownVersion FROM Files WHERE LocalPath=?")) {
+                ps.setString(1, task.localPath);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    serverFileId = rs.getObject("ServerFileID", Integer.class);
+                    baseVersion  = rs.getObject("LastKnownVersion", Integer.class);
+                }
+            }
+        }
+
+        Response res;
+        if (serverFileId != null && serverFileId > 0) {
+            res = networkService.deleteFile(serverFileId, baseVersion);
+        } else {
+            // fallback: chưa có ServerFileID thì thử xoá theo path
+            res = networkService.deleteFileByPath(task.localPath);
+        }
+
+        // OK hoặc server báo “không tìm thấy” => coi như đã xoá
+        boolean ok =
+                "success".equalsIgnoreCase(res.getStatus())
+                        || ("error".equalsIgnoreCase(res.getStatus())
+                        && res.getMessage() != null
+                        && res.getMessage().toLowerCase().contains("không tìm thấy"));
+
+        // conflict => không xoá được do version mismatch → kéo bản mới về
+        if ("conflict".equalsIgnoreCase(res.getStatus())
+                || ("error".equalsIgnoreCase(res.getStatus())
+                && res.getMessage() != null
+                && res.getMessage().toLowerCase().contains("version mismatch"))) {
+
+            notificationManager.addNotification(
+                    "⚠️ Xung đột khi xoá '" + task.localPath + "': server có phiên bản mới hơn. Sẽ tải lại từ server.",
+                    com.pbl4.syncproject.client.models.NotificationItem.NotificationType.SYSTEM
+            );
+            triggerDownSync();  // để tải lại bản server
+            ok = true;          // xoá task để không kẹt queue
+        }
+
+        if (!ok) {
+            System.err.println("❌ DELETE_FILE fail: " + res.getMessage());
+            return false;
+        }
+
+        // Update since_seq theo seq server trả về (đỡ thấy lại change của chính mình)
+        try {
+            JsonObject d = asObj(res.getData());
+            if (d != null && d.has("seq")) {
+                long seq = d.get("seq").getAsLong();
+                long cur = getSinceSeqCompat();
+                if (seq > cur) {
+                    setSinceSeqCompat(seq);
+                    System.out.println("✅ [DELETE_FILE] Cập nhật since_seq=" + seq);
+                }
+            }
+        } catch (Exception ignore) {}
+
+        // KHÔNG XÓA file khỏi DB, chỉ đánh dấu status để tránh Down-Sync tải lại
+        // Giữ file trong DB với status='DELETED' để tracking
         try (Connection conn = localDbManager.getConnection();
-             PreparedStatement ps = conn.prepareStatement("DELETE FROM Files WHERE LocalPath=?")) {
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE Files SET SyncStatus=? WHERE LocalPath=?")) {
+            ps.setString(1, "DELETED");
+            ps.setString(2, task.localPath);
+            int updated = ps.executeUpdate();
+            if (updated > 0) {
+                System.out.println("✅ [DELETE_FILE] Đã đánh dấu file DELETED trong DB: " + task.localPath);
+            }
+        }
+
+        return true;
+    }
+    private boolean handleDeleteFolderTask(SyncTask task) throws Exception {
+        Integer serverFolderId = null;
+        Integer baseVersion = null;
+
+        try (Connection conn = localDbManager.getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT ServerFolderID, ServerVersion FROM Folders WHERE LocalPath=? AND FolderID<>1")) {
+                ps.setString(1, task.localPath);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    serverFolderId = rs.getObject("ServerFolderID", Integer.class);
+                    baseVersion = rs.getObject("ServerVersion", Integer.class);
+                }
+            }
+        }
+
+        Response res;
+        if (serverFolderId != null && serverFolderId > 0) {
+            res = networkService.deleteFolder(serverFolderId, true, baseVersion);
+        } else {
+            // folder chưa từng sync lên server → chỉ dọn local
+            res = new Response("success", "Local-only folder", null);
+        }
+
+        boolean ok =
+                "success".equalsIgnoreCase(res.getStatus())
+                        || ("error".equalsIgnoreCase(res.getStatus())
+                        && res.getMessage() != null
+                        && res.getMessage().toLowerCase().contains("không tồn tại"));
+
+        if (!ok) {
+            System.err.println("❌ DELETE_FOLDER fail: " + res.getMessage());
+            return false;
+        }
+
+        // Update since_seq nếu có
+        try {
+            JsonObject d = asObj(res.getData());
+            if (d != null && d.has("seq")) {
+                long seq = d.get("seq").getAsLong();
+                long cur = getSinceSeqCompat();
+                if (seq > cur) setSinceSeqCompat(seq);
+            }
+        } catch (Exception ignore) {}
+
+        // Xoá cache local (cascade sẽ xoá Files con nếu FK ON DELETE CASCADE)
+        try (Connection conn = localDbManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement("DELETE FROM Folders WHERE LocalPath=?")) {
             ps.setString(1, task.localPath);
             ps.executeUpdate();
         }
+
         return true;
     }
+
 
     private void updateFileStatusAfterUpload(String localPath, Response serverResponse) throws SQLException {
         JsonObject d = asObj(serverResponse.getData());
@@ -1261,9 +1458,9 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
                     boolean completed = downloadLatch.await(60, java.util.concurrent.TimeUnit.SECONDS);
                     if (!completed) {
                         System.err.println("⚠️ Timeout: Một số downloads chưa hoàn thành sau 60s");
-                    } else {
+                      } else {
                         System.out.println("✅ Tất cả downloads đã hoàn thành!");
-                    }
+                      }
                 } catch (InterruptedException e) {
                     System.err.println("⚠️ Bị gián đoạn khi đợi downloads: " + e.getMessage());
                     Thread.currentThread().interrupt();
@@ -1992,3 +2189,4 @@ public class SyncAgent implements FileWatcherService.FileChangeListener {
     }
 
 }
+
