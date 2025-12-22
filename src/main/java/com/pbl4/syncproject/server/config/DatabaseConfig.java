@@ -6,27 +6,21 @@ import java.sql.SQLException;
 import java.util.Properties;
 
 /**
- * Database configuration and connection utility
- * Handles MySQL driver loading and connection management
+ * Database configuration and connection management utility
  */
 public class DatabaseConfig {
     
-    // Database configuration
     private static final String DEFAULT_URL = "jdbc:mysql://127.0.0.1:3307/syncdb";
     private static final String DEFAULT_USER = "root";
     private static final String DEFAULT_PASSWORD = "123456";
     private static final String MYSQL_DRIVER = "com.mysql.cj.jdbc.Driver";
     
-    // Connection properties
     private static final String SERVER_TIMEZONE = "UTC";
     private static final String USE_SSL = "false";
     private static final String ALLOW_PUBLIC_KEY_RETRIEVAL = "true";
     
     private static boolean driverLoaded = false;
     
-    /**
-     * Initialize and load MySQL driver
-     */
     public static void initializeDriver() {
         if (!driverLoaded) {
             try {
@@ -41,16 +35,10 @@ public class DatabaseConfig {
         }
     }
     
-    /**
-     * Create database connection with default settings
-     */
     public static Connection createConnection() throws SQLException {
         return createConnection(DEFAULT_URL, DEFAULT_USER, DEFAULT_PASSWORD);
     }
     
-    /**
-     * Create database connection with custom parameters
-     */
     public static Connection createConnection(String url, String user, String password) throws SQLException {
         initializeDriver();
         
@@ -73,9 +61,6 @@ public class DatabaseConfig {
         }
     }
     
-    /**
-     * Test database connection
-     */
     public static boolean testConnection() {
         try (Connection connection = createConnection()) {
             return connection != null && !connection.isClosed();
@@ -85,9 +70,6 @@ public class DatabaseConfig {
         }
     }
     
-    /**
-     * Test database connection with custom parameters
-     */
     public static boolean testConnection(String url, String user, String password) {
         try (Connection connection = createConnection(url, user, password)) {
             return connection != null && !connection.isClosed();
@@ -98,11 +80,10 @@ public class DatabaseConfig {
     }
     
     /**
-     * Extract server info from URL for logging
+     * Extract server info from JDBC URL for logging purposes
      */
     private static String getServerInfo(String url) {
         try {
-            // Extract host:port/database from jdbc:mysql://host:port/database
             String[] parts = url.split("//");
             if (parts.length > 1) {
                 return parts[1];
@@ -113,9 +94,6 @@ public class DatabaseConfig {
         return url;
     }
     
-    /**
-     * Get database configuration info for debugging
-     */
     public static void printDatabaseInfo() {
         System.out.println("=== Database Configuration ===");
         System.out.println("URL: " + DEFAULT_URL);

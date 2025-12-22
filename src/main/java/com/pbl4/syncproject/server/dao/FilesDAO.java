@@ -25,8 +25,8 @@ public final class FilesDAO {
             try (ResultSet rs = ps.executeQuery()) {
                 List<Files> out = new ArrayList<>();
                 while (rs.next()) {
-                    Timestamp created = rs.getTimestamp("CreatedAt");     // NOT NULL theo schema
-                    Timestamp last    = rs.getTimestamp("LastModified");  // có thể NULL
+                    Timestamp created = rs.getTimestamp("CreatedAt");
+                    Timestamp last    = rs.getTimestamp("LastModified");
                     out.add(new Files(
                             rs.getInt("FileID"),
                             rs.getInt("FolderID"),
@@ -43,7 +43,7 @@ public final class FilesDAO {
     }
 
     /**
-     * BƯỚC 7.2: Lấy file theo tên và folder (để kiểm tra xung đột)
+     * Get file by name and folder (for conflict detection)
      */
     public static Files getFileByNameAndFolder(String fileName, int folderId) throws SQLException {
         String sql = "SELECT " + COLS + " FROM Files WHERE FileName = ? AND FolderID = ? LIMIT 1";
@@ -68,13 +68,13 @@ public final class FilesDAO {
                             last != null ? last.toLocalDateTime() : null
                     );
                 }
-                return null; // File không tồn tại
+                return null;
             }
         }
     }
 
     /**
-     * Lấy file theo FileID (dùng cho Down-Sync)
+     * Get file by FileID (used for download/sync)
      */
     public static Files getFileById(int fileId) throws SQLException {
         String sql = "SELECT " + COLS + " FROM Files WHERE FileID = ? LIMIT 1";
@@ -98,7 +98,7 @@ public final class FilesDAO {
                             last != null ? last.toLocalDateTime() : null
                     );
                 }
-                return null; // File không tồn tại
+                return null;
             }
         }
     }

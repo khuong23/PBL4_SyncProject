@@ -25,7 +25,7 @@ public class ServerApp {
             final ServerSocket serverSocket = new ServerSocket(PORT);
             System.out.println("[INFO]  Server started on port " + PORT + " (threads=" + MAX_THREADS + ")");
 
-            // Shutdown hook: chỉ đóng socket + thread pool. KHÔNG đóng DB pool (DatabaseManager tự làm).
+            // Shutdown hook: DatabaseManager tự quản lý connection pool riêng
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.out.println("[INFO] Shutdown requested. Closing server...");
                 try { serverSocket.close(); } catch (IOException ignore) {}
